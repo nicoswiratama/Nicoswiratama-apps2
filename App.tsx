@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { GoogleGenAI } from "@google/genai";
 import { 
@@ -57,7 +58,8 @@ import {
 } from 'lucide-react';
 
 /**
- * THELOKA PRO v16.0 - Dynamic AI Scaling Edition
+ * THELOKA PRO v16.1 - Dynamic AI Scaling Edition (Checkpoint Version)
+ * Fix: Integrated Setup Baselines with Revenue Management
  */
 
 // --- UTILITIES ---
@@ -81,6 +83,7 @@ const getDaysInMonth = (monthIndex: number) => {
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // --- DATA CONSTANTS ---
+// Seasonality multipliers relative to 1.0 (average)
 const BASE_SEASONALITY = [0.70, 0.65, 0.60, 0.75, 0.70, 0.80, 0.85, 0.88, 0.75, 0.72, 0.68, 0.90];
 
 const HOTEL_NAMES_DB = [
@@ -98,7 +101,7 @@ const ThelokaBrain = {
       const sold = Math.round(available * (target.occ / 100));
       const revenue = sold * target.arr;
       const guests = sold * 2; 
-      const revpar = revenue / available;
+      const revpar = (target.arr * target.occ) / 100;
       yearlyStats.available += available;
       yearlyStats.sold += sold;
       yearlyStats.roomRevenue += revenue;
@@ -370,6 +373,15 @@ export default function App() {
     ]
   });
 
+  // -- REVENUE MANAGEMENT STATE --
+  const [monthlyTargets, setMonthlyTargets] = useState(
+    BASE_SEASONALITY.map((occ, idx) => ({ 
+      monthIdx: idx, 
+      occ: occ * 100, 
+      arr: 2500000 
+    }))
+  );
+
   // -- PROPERTY SURVEY STATE --
   const [surveys, setSurveys] = useState<any[]>([]);
   const [surveyLoading, setSurveyLoading] = useState(false);
@@ -401,14 +413,6 @@ export default function App() {
     generalNotes: ""
   });
 
-  const [monthlyTargets, setMonthlyTargets] = useState(
-    BASE_SEASONALITY.map((occ, idx) => ({ 
-      monthIdx: idx, 
-      occ: occ * 100, 
-      arr: 2500000 
-    }))
-  );
-
   const [projectedData, setProjectedData] = useState<any>(null);
   const [longTermData, setLongTermData] = useState<any>(null);
   const [growthParams, setGrowthParams] = useState({ revGrowth: 0.05, costInflation: 0.03 });
@@ -421,6 +425,21 @@ export default function App() {
   const [newCompetitor, setNewCompetitor] = useState({ name: '', rate: 0, dist: 0 });
 
   // -- HANDLERS --
+
+  // Integration: Update all months when setup adr/occ changes
+  const updateMonthlyFromSetup = (field: 'adr' | 'targetOcc', value: number) => {
+    setMonthlyTargets(prev => prev.map((m, idx) => {
+      if (field === 'adr') {
+        return { ...m, arr: value };
+      } else {
+        // Apply seasonality weights to the target average
+        const weight = BASE_SEASONALITY[idx];
+        const weightedOcc = Math.min(99, Math.max(5, value * (weight / 0.75))); // normalize around 0.75 base
+        return { ...m, occ: parseFloat(weightedOcc.toFixed(1)) };
+      }
+    }));
+  };
+
   const handleGenerate = () => {
     const revenueDetails = ThelokaBrain.calculateRevenue(basicInput.rooms, monthlyTargets);
     const data: any = ThelokaBrain.generateProjection(basicInput, revenueDetails);
@@ -463,7 +482,7 @@ export default function App() {
     alert(`AI Optimization Applied: Revenue Growth set to ${(newGrowth*100).toFixed(1)}%, Cost Inflation to ${(newCost*100).toFixed(1)}%`);
   };
 
-  // Property Survey Handlers using gemini-3-pro-preview for high reasoning
+  // Property Survey AI Handlers
   const saveSurvey = () => {
     if (!currentSurvey.property || !currentSurvey.inspector) {
       alert("Harap isi Nama Properti dan Inspektur");
@@ -489,7 +508,6 @@ export default function App() {
     }
     setSurveyLoading(true);
     try {
-      // Create new instance before call as per guidelines
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const surveyText = JSON.stringify(surveys);
       const response = await ai.models.generateContent({
@@ -559,12 +577,10 @@ export default function App() {
     setSuggestedRate({ low: low * 0.95, mid: avg, high: high * 1.05 });
   };
 
-  // Fixed missing applySuggestedRate function
   const applySuggestedRate = (rate: number) => {
     const roundedRate = Math.round(rate);
     setBasicInput(prev => ({ ...prev, adr: roundedRate }));
-    // Globally update the ADR in monthly targets for consistent baseline projection
-    setMonthlyTargets(prev => prev.map(m => ({ ...m, arr: roundedRate })));
+    updateMonthlyFromSetup('adr', roundedRate);
   };
 
   const handlePrint = () => window.print();
@@ -627,40 +643,69 @@ export default function App() {
     }
   };
 
-  // --- RENDERERS ---
+  // -- MANAGEMENT EARNINGS CALCULATIONS --
+  const mEarnings = useMemo(() => {
+    if (!projectedData || !longTermData) return null;
+    
+    const calculateFeeForData = (rev: number, exp: number) => {
+      const gop = rev - exp;
+      if (basicInput.feeModel === '15_percent') {
+        return rev * (basicInput.customFee.revPct / 100);
+      } else {
+        const base = rev * (basicInput.customFee.baseRevPct / 100);
+        const incentive = Math.max(0, gop) * (basicInput.customFee.gopPct / 100);
+        return base + incentive;
+      }
+    };
+
+    const yearlyFees = longTermData.map((d: any) => ({
+      year: d.year,
+      revenue: d.revenue,
+      gop: d.gop,
+      fee: calculateFeeForData(d.revenue, d.expense)
+    }));
+
+    return {
+      monthly: yearlyFees[0].fee / 12,
+      yearly: yearlyFees
+    };
+  }, [projectedData, longTermData, basicInput]);
+
+  // --- VIEW RENDERERS ---
 
   const renderSidebar = () => (
     <aside className={`fixed inset-y-0 left-0 z-50 bg-slate-900 w-64 text-white transition-transform duration-300 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 flex flex-col shadow-2xl overflow-y-auto print:hidden`}>
-      <div className="h-20 flex items-center px-6 border-b border-slate-800">
+      <div className="h-20 flex items-center px-6 border-b border-slate-800 shrink-0">
         <div className="bg-yellow-400 p-1.5 rounded-lg mr-3 shadow-lg">
           <Hotel className="w-5 h-5 text-blue-900" />
         </div>
         <div>
           <h1 className="font-bold text-lg tracking-wider">THELOKA</h1>
-          <p className="text-[9px] text-slate-400 uppercase tracking-widest">System Pro v16.0</p>
+          <p className="text-[9px] text-slate-400 uppercase tracking-widest">System Pro v16.1</p>
         </div>
       </div>
       <div className="flex-1 py-6 px-3 space-y-1">
-        <div className="px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase">Core Setup</div>
-        <button onClick={() => setActiveView('setup')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'setup' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Settings className="w-4 h-4 mr-3" /> Quick Setup</button>
-        <button onClick={() => setActiveView('revenue')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'revenue' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><BarChart3 className="w-4 h-4 mr-3" /> Revenue Management</button>
-        <button onClick={() => setActiveView('competitor')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'competitor' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Globe className="w-4 h-4 mr-3" /> Market Intelligence</button>
+        <div className="px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Base Config</div>
+        <button onClick={() => setActiveView('setup')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'setup' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Settings className="w-4 h-4 mr-3" /> Quick Setup</button>
+        <button onClick={() => setActiveView('revenue')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'revenue' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><BarChart3 className="w-4 h-4 mr-3" /> Revenue Management</button>
+        <button onClick={() => setActiveView('competitor')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'competitor' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Globe className="w-4 h-4 mr-3" /> Market Intelligence</button>
         
-        <div className="px-3 mb-2 mt-6 text-[10px] font-bold text-slate-500 uppercase">Field Operations</div>
-        <button onClick={() => setActiveView('property_survey')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'property_survey' ? 'bg-orange-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><ClipboardCheck className="w-4 h-4 mr-3" /> Property Survey</button>
+        <div className="pt-4 px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Analytics</div>
+        <button onClick={() => setActiveView('dashboard')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'dashboard' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><LayoutDashboard className="w-4 h-4 mr-3" /> Dashboard Summary</button>
+        <button onClick={() => setActiveView('earnings')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'earnings' ? 'bg-indigo-600 font-bold shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:bg-slate-800'}`}><Coins className="w-4 h-4 mr-3 text-yellow-400" /> Management Fee</button>
 
-        <div className="px-3 mb-2 mt-6 text-[10px] font-bold text-slate-500 uppercase">Analysis</div>
-        <button onClick={() => setActiveView('dashboard')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'dashboard' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><LayoutDashboard className="w-4 h-4 mr-3" /> Dashboard Summary</button>
+        <div className="pt-4 px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Field Operations</div>
+        <button onClick={() => setActiveView('property_survey')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'property_survey' ? 'bg-orange-600 font-bold shadow-lg shadow-orange-500/20' : 'text-slate-400 hover:bg-slate-800'}`}><ClipboardCheck className="w-4 h-4 mr-3" /> Property Survey</button>
 
-        <div className="px-3 mb-2 mt-6 text-[10px] font-bold text-slate-500 uppercase">Departments</div>
-        <button onClick={() => setActiveView('room_div')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'room_div' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><BedDouble className="w-4 h-4 mr-3" /> Rooms (FO & HK)</button>
-        <button onClick={() => setActiveView('fb_div')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'fb_div' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Utensils className="w-4 h-4 mr-3" /> Food & Beverage</button>
-        <button onClick={() => setActiveView('pomec_div')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'pomec_div' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Wrench className="w-4 h-4 mr-3" /> POMEC (Eng)</button>
-        <button onClick={() => setActiveView('admin_div')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'admin_div' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Briefcase className="w-4 h-4 mr-3" /> A&G / HRD</button>
-        <button onClick={() => setActiveView('sales_div')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'sales_div' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Megaphone className="w-4 h-4 mr-3" /> Sales & Marketing</button>
+        <div className="pt-4 px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">OpEx Departments</div>
+        <button onClick={() => setActiveView('room_div')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'room_div' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><BedDouble className="w-4 h-4 mr-3" /> Rooms (FO & HK)</button>
+        <button onClick={() => setActiveView('fb_div')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'fb_div' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Utensils className="w-4 h-4 mr-3" /> Food & Beverage</button>
+        <button onClick={() => setActiveView('pomec_div')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'pomec_div' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Wrench className="w-4 h-4 mr-3" /> POMEC (Eng)</button>
+        <button onClick={() => setActiveView('admin_div')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'admin_div' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Briefcase className="w-4 h-4 mr-3" /> A&G / HRD</button>
+        <button onClick={() => setActiveView('sales_div')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'sales_div' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Megaphone className="w-4 h-4 mr-3" /> Sales & Marketing</button>
 
-        <div className="px-3 mb-2 mt-6 text-[10px] font-bold text-slate-500 uppercase">Reports</div>
-        <button onClick={() => setActiveView('pnl')} className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-all text-sm ${activeView === 'pnl' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><FileText className="w-4 h-4 mr-3" /> Consolidated P&L</button>
+        <div className="pt-4 px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Financial Reports</div>
+        <button onClick={() => setActiveView('pnl')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'pnl' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><FileText className="w-4 h-4 mr-3" /> Consolidated P&L</button>
       </div>
     </aside>
   );
@@ -739,7 +784,6 @@ export default function App() {
               </div>
 
               <div className="space-y-8">
-                {/* FACILITIES SECTION */}
                 <div>
                   <div className="flex justify-between items-center mb-4">
                     <h4 className="text-xs font-bold text-blue-900 uppercase tracking-widest flex items-center">
@@ -789,7 +833,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* SERVICES SECTION */}
                 <div>
                   <div className="flex justify-between items-center mb-4">
                     <h4 className="text-xs font-bold text-emerald-900 uppercase tracking-widest flex items-center">
@@ -1093,6 +1136,220 @@ export default function App() {
     );
   };
 
+  const renderDashboard = () => {
+    if (!projectedData) return <div className="text-center p-10 text-slate-400">Please Run Setup First</div>;
+    const { revenue, depts } = projectedData;
+    const deptValues = Object.values(depts) as any[];
+    const totalPayroll = deptValues.reduce((a: number, b: any) => a + (b.payroll as number), 0);
+    const totalExpense = deptValues.reduce((a: number, b: any) => a + (b.totalExpense as number), 0);
+    const gop = revenue.total - totalPayroll - totalExpense;
+    return (
+      <div className="space-y-6 animate-fade-in max-w-6xl mx-auto pt-6">
+        <div className="flex justify-between items-center border-b border-slate-100 pb-4">
+          <div><h2 className="text-2xl font-bold text-slate-800">Executive Summary</h2><p className="text-xs text-slate-500 font-bold uppercase mt-1">{basicInput.name} • {basicInput.address}</p></div>
+          <div className="bg-emerald-100 text-emerald-800 px-4 py-1.5 rounded-full text-sm font-bold">Projected GOP: {formatPercent(gop / revenue.total)}</div>
+        </div>
+
+        {longTermData && (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mb-6">
+             <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+                <div className="flex items-center space-x-3">
+                   <h3 className="font-bold text-slate-700 flex items-center"><TrendingUp className="w-4 h-4 mr-2"/> Growth Outlook</h3>
+                   <div className="flex bg-white rounded-lg border border-slate-200 p-0.5">
+                      {[1, 3, 5, 10].map(yr => (
+                        <button 
+                          key={yr}
+                          onClick={() => setDashboardTimeframe(yr)}
+                          className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${dashboardTimeframe === yr ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
+                        >
+                          {yr} Year
+                        </button>
+                      ))}
+                   </div>
+                </div>
+                <button onClick={simulateAiGrowth} className="text-xs flex items-center bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition-colors">
+                   <BrainCircuit className="w-3 h-3 mr-1"/> AI Simulate
+                </button>
+             </div>
+             <div className="overflow-x-auto">
+                <table className="w-full text-sm text-right">
+                   <thead>
+                      <tr className="text-xs text-slate-500 border-b">
+                         <th className="p-3 text-left">Period</th>
+                         <th className="p-3">Revenue</th>
+                         <th className="p-3">Total Cost</th>
+                         <th className="p-3 text-emerald-700">GOP</th>
+                         <th className="p-3">Margin</th>
+                      </tr>
+                   </thead>
+                   <tbody>
+                      {longTermData.filter((d: any) => d.year <= dashboardTimeframe).map((d: any, i: number) => (
+                         <tr key={i} className="border-b last:border-0 hover:bg-slate-50 transition-colors">
+                            <td className="p-3 text-left font-bold text-slate-700">Year {d.year}</td>
+                            <td className="p-3 text-slate-600">{formatIDR(d.revenue)}</td>
+                            <td className="p-3 text-red-400">({formatIDR(d.expense)})</td>
+                            <td className="p-3 font-bold text-emerald-700">{formatIDR(d.gop)}</td>
+                            <td className="p-3 text-slate-500">{formatPercent(d.margin)}</td>
+                         </tr>
+                      ))}
+                   </tbody>
+                </table>
+             </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <div className="text-sm text-slate-500 mb-1">Total Revenue</div>
+            <div className="text-2xl font-bold text-blue-900">{formatIDR(revenue.total)}</div>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+             <div className="text-sm text-slate-500 mb-1">Total Expenses</div>
+            <div className="text-2xl font-bold text-rose-600">{formatIDR(totalPayroll + totalExpense)}</div>
+          </div>
+          <div className="bg-blue-900 text-white p-6 rounded-2xl shadow-lg">
+             <div className="text-sm text-blue-200 mb-1">Gross Operating Profit</div>
+            <div className="text-3xl font-bold text-yellow-400">{formatIDR(gop)}</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderEarningsReport = () => {
+    if (!mEarnings) return <div className="text-center p-10 text-slate-400">Please Run Setup & Calculation First</div>;
+    return (
+      <div className="max-w-6xl mx-auto pt-6 animate-fade-in space-y-8">
+        <div className="flex justify-between items-center border-b border-slate-100 pb-4">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-800 flex items-center"><Coins className="w-6 h-6 mr-3 text-indigo-600" /> Management Fee Report</h2>
+            <p className="text-slate-500 text-sm mt-1 uppercase font-bold tracking-widest">Internal Operator Earnings Projection</p>
+          </div>
+          <button onClick={handlePrint} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center hover:bg-black transition-all shadow-md">
+            <Download className="w-4 h-4 mr-2" /> PDF Internal Report
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="md:col-span-2 space-y-6">
+             <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-8 opacity-5"><BrainCircuit size={120} /></div>
+                <h3 className="text-xl font-bold mb-8">Executive Take-Home Summary</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                   <div className="bg-slate-900 p-6 rounded-2xl text-white shadow-xl">
+                      <p className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-2">Monthly Average (Year 1)</p>
+                      <p className="text-3xl font-black text-yellow-400">{formatIDR(mEarnings.monthly)}</p>
+                      <p className="text-[10px] text-slate-400 mt-2 italic font-medium">Estimated net fee after operating costs.</p>
+                   </div>
+                   <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100">
+                      <p className="text-[10px] font-black uppercase text-indigo-400 tracking-widest mb-2">Yearly Total (Year 1)</p>
+                      <p className="text-3xl font-black text-indigo-900">{formatIDR(mEarnings.yearly[0].fee)}</p>
+                      <div className="mt-2 flex items-center space-x-2">
+                         <span className="text-[9px] bg-white px-1.5 py-0.5 rounded border border-indigo-100 text-indigo-600 font-bold uppercase">Model: {basicInput.feeModel.replace('_', ' ')}</span>
+                      </div>
+                   </div>
+                </div>
+             </div>
+
+             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-6 py-4 border-b bg-slate-50/50">
+                   <h4 className="text-sm font-bold text-slate-700">Earnings Projections (Long-Term)</h4>
+                </div>
+                <div className="overflow-x-auto">
+                   <table className="w-full text-sm text-right">
+                      <thead>
+                        <tr className="text-[10px] font-black uppercase text-slate-400 border-b tracking-widest">
+                           <th className="p-4 text-left">Timeline</th>
+                           <th className="p-4">Property Revenue</th>
+                           <th className="p-4">Property GOP</th>
+                           <th className="p-4 text-indigo-600">Operator Earnings (Fee)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mEarnings.yearly.map((data, idx) => (
+                          <tr key={idx} className={`border-b last:border-0 hover:bg-slate-50 transition-colors ${[0, 2, 4, 9].includes(idx) ? 'bg-indigo-50/20' : ''}`}>
+                            <td className="p-4 text-left font-bold text-slate-700">
+                               {data.year} Year{data.year > 1 ? 's' : ''} Projection
+                               {[0, 2, 4, 9].includes(idx) && <span className="ml-2 text-[9px] bg-indigo-100 text-indigo-600 px-1 rounded uppercase">Key</span>}
+                            </td>
+                            <td className="p-4 text-slate-500 font-mono text-xs">{formatIDR(data.revenue)}</td>
+                            <td className="p-4 text-slate-500 font-mono text-xs">{formatIDR(data.gop)}</td>
+                            <td className="p-4 font-black text-indigo-900 text-lg">{formatIDR(data.fee)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                   </table>
+                </div>
+             </div>
+          </div>
+
+          <div className="space-y-6">
+             <div className="bg-slate-900 rounded-2xl p-8 text-white shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-4 opacity-10"><Zap size={60} /></div>
+                <h4 className="text-xs font-black uppercase text-blue-400 mb-8 tracking-widest">Simulation Center</h4>
+                <div className="space-y-8">
+                   <div>
+                      <div className="flex justify-between mb-2">
+                         <label className="text-[10px] font-bold text-slate-500 uppercase">Revenue Growth / Yr</label>
+                         <span className="text-xs font-bold text-blue-400">{formatPercent(growthParams.revGrowth)}</span>
+                      </div>
+                      <input 
+                        type="range" min="0" max="0.2" step="0.01" 
+                        value={growthParams.revGrowth} 
+                        onChange={(e)=>setGrowthParams({...growthParams, revGrowth: parseFloat(e.target.value)})} 
+                        className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500" 
+                      />
+                   </div>
+                   <div>
+                      <div className="flex justify-between mb-2">
+                         <label className="text-[10px] font-bold text-slate-500 uppercase">Cost Inflation / Yr</label>
+                         <span className="text-xs font-bold text-rose-400">{formatPercent(growthParams.costInflation)}</span>
+                      </div>
+                      <input 
+                        type="range" min="0" max="0.1" step="0.01" 
+                        value={growthParams.costInflation} 
+                        onChange={(e)=>setGrowthParams({...growthParams, costInflation: parseFloat(e.target.value)})} 
+                        className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500" 
+                      />
+                   </div>
+                </div>
+             </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPnL = () => {
+     if (!projectedData) return <div className="text-center p-10 text-slate-400">Please Generate Projection First</div>;
+     const { revenue, depts } = projectedData;
+     const deptValues = Object.values(depts) as any[];
+     const totalPayroll = deptValues.reduce((a: number, b: any) => a + (b.payroll as number), 0);
+     const totalExpense = deptValues.reduce((a: number, b: any) => a + (b.totalExpense as number), 0);
+     const gop = revenue.total - totalPayroll - totalExpense;
+     let fee = basicInput.feeModel === '15_percent' ? revenue.total * (basicInput.customFee.revPct / 100) : (revenue.total * (basicInput.customFee.baseRevPct / 100)) + (Math.max(0, gop) * (basicInput.customFee.gopPct / 100));
+     const nop = gop - fee;
+
+     return (
+       <div className="bg-white p-8 rounded-2xl shadow-lg animate-fade-in max-w-4xl mx-auto border border-slate-200 print:p-0">
+         <div className="flex justify-between items-center mb-8 border-b pb-6">
+           <div><h2 className="text-2xl font-bold text-slate-900">Consolidated P&L Projection</h2><div className="text-slate-500 text-sm mt-1 font-bold">{basicInput.name}</div></div>
+           <button onClick={handlePrint} className="text-white bg-blue-900 px-4 py-2 rounded-lg text-sm font-bold flex items-center print:hidden"><Download className="w-4 h-4 mr-2" /> PDF Report</button>
+         </div>
+         <div className="space-y-2 text-sm">
+           <div className="flex justify-between font-bold bg-slate-50 p-2 rounded"><span>TOTAL REVENUE</span><span>{formatIDR(revenue.total)}</span></div>
+           <div className="flex justify-between font-bold bg-slate-50 p-2 rounded mt-2"><span>OPERATING EXPENSES</span><span className="text-rose-600">({formatIDR(totalPayroll + totalExpense)})</span></div>
+           <div className="flex justify-between font-bold text-xl text-blue-900 bg-blue-50 p-3 mt-6 rounded"><span>GROSS OPERATING PROFIT</span><span>{formatIDR(gop)}</span></div>
+           <div className="flex justify-between items-center p-3 bg-slate-100/50 rounded mt-4 border border-dashed border-slate-300">
+              <span className="text-xs font-bold text-slate-500 uppercase">Management Fee Adjustment</span>
+              <span className="text-sm font-bold text-indigo-700">({formatIDR(fee)})</span>
+           </div>
+           <div className="flex justify-between font-bold text-xl text-white bg-slate-900 p-4 rounded-lg mt-4 shadow-lg"><span>NET OPERATING PROFIT (NOP)</span><span>{formatIDR(nop)}</span></div>
+         </div>
+       </div>
+     );
+  };
+
   const renderSetup = () => (
     <div className="max-w-4xl mx-auto pt-10 animate-fade-in">
       <div className="text-center mb-8">
@@ -1116,13 +1373,32 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold text-blue-800 uppercase mb-2">Target Harga (ADR)</label>
-                    <input type="number" value={basicInput.adr} onChange={(e)=>setBasicInput({...basicInput, adr: parseFloat(e.target.value)||0})} className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 font-bold text-blue-900" />
+                    <input 
+                      type="number" 
+                      value={basicInput.adr} 
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value)||0;
+                        setBasicInput(prev => ({...prev, adr: val}));
+                        updateMonthlyFromSetup('adr', val); // Integration update
+                      }} 
+                      className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 font-bold text-blue-900" 
+                    />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-blue-800 uppercase mb-2">Target Occupancy (%)</label>
-                    <input type="number" value={basicInput.targetOcc} onChange={(e)=>setBasicInput({...basicInput, targetOcc: parseFloat(e.target.value)||0})} className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 font-bold text-blue-900" />
+                    <input 
+                      type="number" 
+                      value={basicInput.targetOcc} 
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value)||0;
+                        setBasicInput(prev => ({...prev, targetOcc: val}));
+                        updateMonthlyFromSetup('targetOcc', val); // Integration update
+                      }} 
+                      className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 font-bold text-blue-900" 
+                    />
                   </div>
                 </div>
+                <p className="text-[10px] text-blue-500 mt-2 italic font-medium">* Merubah nilai di atas akan mereset rincian target di menu Revenue Management.</p>
              </div>
            </div>
            
@@ -1305,20 +1581,13 @@ export default function App() {
                   <td key={i} className="px-1"><input type="number" value={m.arr} onChange={(e) => handleMonthlyChange(i, 'arr', e.target.value)} className="w-full text-right bg-white text-xs border border-emerald-200 rounded py-1 font-bold text-emerald-700 focus:ring-2 focus:ring-emerald-500"/></td>
                 ))}
                 <td className="px-4 font-bold bg-slate-50 text-emerald-900">
-                  {formatIDR(monthlyTargets.reduce((a,b,i) => a + (Math.round((Number(b.occ)/100) * basicInput.rooms * getDaysInMonth(i)) * Number(b.arr)), 0) / monthlyTargets.reduce((a,b,i) => a + (Math.round((Number(b.occ)/100) * basicInput.rooms * getDaysInMonth(i))), 0))}
+                  {formatIDR(monthlyTargets.reduce((a,b,i) => a + (Math.round((Number(b.occ)/100) * basicInput.rooms * getDaysInMonth(i)) * Number(b.arr)), 0) / Math.max(1, monthlyTargets.reduce((a,b,i) => a + (Math.round((Number(b.occ)/100) * basicInput.rooms * getDaysInMonth(i))), 0)))}
                 </td>
               </tr>
               <tr className="border-b border-slate-100 bg-yellow-50/50">
                 <td className="py-3 px-4 text-left font-bold text-slate-700 sticky left-0 bg-white">REVPAR</td>
                 {monthlyTargets.map((m, i) => <td key={i} className="px-2 font-mono text-xs text-slate-600">{formatIDR((m.arr * m.occ)/100)}</td>)}
                 <td className="px-4 font-bold bg-slate-50">-</td>
-              </tr>
-              <tr className="border-b border-slate-100">
-                <td className="py-3 px-4 text-left font-bold text-slate-500 sticky left-0 bg-white">NO. GUESTS</td>
-                {monthlyTargets.map((m, i) => <td key={i} className="px-2 text-xs text-slate-400">{Math.round((m.occ/100) * basicInput.rooms * getDaysInMonth(i)) * 2}</td>)}
-                <td className="px-4 font-bold bg-slate-50 text-slate-600">
-                  {monthlyTargets.reduce((a,b,i) => a + (Math.round((Number(b.occ)/100) * basicInput.rooms * getDaysInMonth(i)) * 2), 0)}
-                </td>
               </tr>
               <tr className="bg-slate-50 font-bold text-slate-800 border-t border-slate-200">
                 <td className="py-3 px-4 text-left sticky left-0 bg-slate-50">ROOM REVENUE</td>
@@ -1331,112 +1600,6 @@ export default function App() {
       </div>
     </div>
   );
-
-  const renderDashboard = () => {
-    if (!projectedData) return <div className="text-center p-10 text-slate-400">Please Run Setup First</div>;
-    const { revenue, depts } = projectedData;
-    const deptValues = Object.values(depts) as any[];
-    const totalPayroll = deptValues.reduce((a: number, b: any) => a + (b.payroll as number), 0);
-    const totalExpense = deptValues.reduce((a: number, b: any) => a + (b.totalExpense as number), 0);
-    const gop = revenue.total - totalPayroll - totalExpense;
-    return (
-      <div className="space-y-6 animate-fade-in max-w-6xl mx-auto pt-6">
-        <div className="flex justify-between items-center border-b border-slate-100 pb-4">
-          <div><h2 className="text-2xl font-bold text-slate-800">Executive Summary</h2><p className="text-xs text-slate-500 font-bold uppercase mt-1">{basicInput.name} • {basicInput.address}</p></div>
-          <div className="bg-emerald-100 text-emerald-800 px-4 py-1.5 rounded-full text-sm font-bold">Projected GOP: {formatPercent(gop / revenue.total)}</div>
-        </div>
-
-        {longTermData && (
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mb-6">
-             <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-                <div className="flex items-center space-x-3">
-                   <h3 className="font-bold text-slate-700 flex items-center"><TrendingUp className="w-4 h-4 mr-2"/> Growth Outlook</h3>
-                   <div className="flex bg-white rounded-lg border border-slate-200 p-0.5">
-                      {[1, 3, 5, 10].map(yr => (
-                        <button 
-                          key={yr}
-                          onClick={() => setDashboardTimeframe(yr)}
-                          className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${dashboardTimeframe === yr ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
-                        >
-                          {yr} Year
-                        </button>
-                      ))}
-                   </div>
-                </div>
-                <button onClick={simulateAiGrowth} className="text-xs flex items-center bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition-colors">
-                   <BrainCircuit className="w-3 h-3 mr-1"/> AI Simulate
-                </button>
-             </div>
-             <div className="overflow-x-auto">
-                <table className="w-full text-sm text-right">
-                   <thead>
-                      <tr className="text-xs text-slate-500 border-b">
-                         <th className="p-3 text-left">Period</th>
-                         <th className="p-3">Revenue</th>
-                         <th className="p-3">Total Cost</th>
-                         <th className="p-3 text-emerald-700">GOP</th>
-                         <th className="p-3">Margin</th>
-                      </tr>
-                   </thead>
-                   <tbody>
-                      {longTermData.filter((d: any) => d.year <= dashboardTimeframe).map((d: any, i: number) => (
-                         <tr key={i} className="border-b last:border-0 hover:bg-slate-50 transition-colors">
-                            <td className="p-3 text-left font-bold text-slate-700">Year {d.year}</td>
-                            <td className="p-3 text-slate-600">{formatIDR(d.revenue)}</td>
-                            <td className="p-3 text-red-400">({formatIDR(d.expense)})</td>
-                            <td className="p-3 font-bold text-emerald-700">{formatIDR(d.gop)}</td>
-                            <td className="p-3 text-slate-500">{formatPercent(d.margin)}</td>
-                         </tr>
-                      ))}
-                   </tbody>
-                </table>
-             </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-            <div className="text-sm text-slate-500 mb-1">Total Revenue</div>
-            <div className="text-2xl font-bold text-blue-900">{formatIDR(revenue.total)}</div>
-          </div>
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-             <div className="text-sm text-slate-500 mb-1">Total Expenses</div>
-            <div className="text-2xl font-bold text-rose-600">{formatIDR(totalPayroll + totalExpense)}</div>
-          </div>
-          <div className="bg-blue-900 text-white p-6 rounded-2xl shadow-lg">
-             <div className="text-sm text-blue-200 mb-1">Gross Operating Profit</div>
-            <div className="text-3xl font-bold text-yellow-400">{formatIDR(gop)}</div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderPnL = () => {
-     if (!projectedData) return <div className="text-center p-10 text-slate-400">Please Generate Projection First</div>;
-     const { revenue, depts } = projectedData;
-     const deptValues = Object.values(depts) as any[];
-     const totalPayroll = deptValues.reduce((a: number, b: any) => a + (b.payroll as number), 0);
-     const totalExpense = deptValues.reduce((a: number, b: any) => a + (b.totalExpense as number), 0);
-     const gop = revenue.total - totalPayroll - totalExpense;
-     let fee = basicInput.feeModel === '15_percent' ? revenue.total * (basicInput.customFee.revPct / 100) : (revenue.total * (basicInput.customFee.baseRevPct / 100)) + (Math.max(0, gop) * (basicInput.customFee.gopPct / 100));
-     const nop = gop - fee;
-
-     return (
-       <div className="bg-white p-8 rounded-2xl shadow-lg animate-fade-in max-w-4xl mx-auto border border-slate-200 print:p-0">
-         <div className="flex justify-between items-center mb-8 border-b pb-6">
-           <div><h2 className="text-2xl font-bold text-slate-900">Consolidated P&L Projection</h2><div className="text-slate-500 text-sm mt-1 font-bold">{basicInput.name}</div></div>
-           <button onClick={handlePrint} className="text-white bg-blue-900 px-4 py-2 rounded-lg text-sm font-bold flex items-center print:hidden"><Download className="w-4 h-4 mr-2" /> PDF Report</button>
-         </div>
-         <div className="space-y-2 text-sm">
-           <div className="flex justify-between font-bold bg-slate-50 p-2 rounded"><span>TOTAL REVENUE</span><span>{formatIDR(revenue.total)}</span></div>
-           <div className="flex justify-between font-bold bg-slate-50 p-2 rounded mt-2"><span>OPERATING EXPENSES</span><span className="text-rose-600">({formatIDR(totalPayroll + totalExpense)})</span></div>
-           <div className="flex justify-between font-bold text-xl text-blue-900 bg-blue-50 p-3 mt-6 rounded"><span>GROSS OPERATING PROFIT</span><span>{formatIDR(gop)}</span></div>
-           <div className="flex justify-between font-bold text-xl text-white bg-slate-900 p-4 rounded-lg mt-4 shadow-lg"><span>NET OPERATING PROFIT (NOP)</span><span>{formatIDR(nop)}</span></div>
-         </div>
-       </div>
-     );
-  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex font-sans text-slate-900">
@@ -1453,6 +1616,7 @@ export default function App() {
            {activeView === 'competitor' && renderCompetitorAnalysis()}
            {activeView === 'property_survey' && renderPropertySurvey()}
            {activeView === 'dashboard' && renderDashboard()}
+           {activeView === 'earnings' && renderEarningsReport()}
            {['room_div', 'fb_div', 'pomec_div', 'admin_div', 'sales_div'].includes(activeView) && renderDepartmentDetail(activeView)}
            {activeView === 'pnl' && renderPnL()}
         </main>
