@@ -139,9 +139,11 @@ const ChatInterface: React.FC = () => {
                   : 'bg-slate-800 border border-slate-700 text-slate-200 rounded-tl-sm'
               }`}>
                 {msg.text ? (
-                   <ReactMarkdown className="prose prose-invert prose-sm max-w-none">
-                     {msg.text}
-                   </ReactMarkdown>
+                   <div className="prose prose-invert prose-sm max-w-none">
+                     <ReactMarkdown>
+                       {msg.text}
+                     </ReactMarkdown>
+                   </div>
                 ) : (
                   <span className="animate-pulse">...</span>
                 )}

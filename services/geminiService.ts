@@ -37,9 +37,7 @@ export const sendChatMessageStream = async (
     // Text-only chat using the chat helper
     const chat = ai.chats.create({
       model,
-      config: {
-        history: history as any,
-      }
+      history: history as any,
     });
 
     const result = await chat.sendMessageStream({ message });

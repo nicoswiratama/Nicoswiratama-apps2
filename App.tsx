@@ -54,8 +54,26 @@ import {
   ShieldCheck,
   Sparkles,
   X,
-  ExternalLink
+  ExternalLink,
+  FileSpreadsheet,
+  GitCompare,
+  Activity,
+  Receipt,
+  History
 } from 'lucide-react';
+import { 
+  exportDepartmentalDataToCSV, 
+  generateDepartmentalCSV, 
+  downloadCSV, 
+  DEPARTMENT_LABELS 
+} from './services/exportCsv';
+import { ExportCsvModal } from './components/ExportCsvModal';
+import { BreakEvenSensitivity } from './components/BreakEvenSensitivity';
+import { ScenarioComparison } from './components/ScenarioComparison';
+import { ManningBenchmark } from './components/ManningBenchmark';
+import { TaxServiceCharge } from './components/TaxServiceCharge';
+import { CapexPayback } from './components/CapexPayback';
+import { HistoricalBudgeting } from './components/HistoricalBudgeting';
 
 /**
  * THELOKA PRO v16.1 - Dynamic AI Scaling Edition (Checkpoint Version)
@@ -91,6 +109,23 @@ const HOTEL_NAMES_DB = [
   "Hideaway", "Sanctuary", "Retreat", "Cottages", "Residence", "Haven"
 ];
 
+// --- REGIONAL MINIMUM WAGE DATABASE (UMK / UMR INDONESIA) ---
+export const REGIONAL_UMK_DB: Record<string, { label: string; province: string; umk: number }> = {
+  'bali_gianyar': { label: 'Bali - Gianyar (Ubud)', province: 'Bali', umk: 3130000 },
+  'bali_badung': { label: 'Bali - Badung (Kuta, Seminyak, Canggu)', province: 'Bali', umk: 3318000 },
+  'bali_denpasar': { label: 'Bali - Kota Denpasar & Sanur', province: 'Bali', umk: 3256000 },
+  'jakarta': { label: 'DKI Jakarta', province: 'DKI Jakarta', umk: 5067381 },
+  'surabaya': { label: 'Jawa Timur - Kota Surabaya', province: 'Jawa Timur', umk: 4725479 },
+  'bandung': { label: 'Jawa Barat - Kota Bandung', province: 'Jawa Barat', umk: 4209309 },
+  'yogyakarta': { label: 'DI Yogyakarta - Sleman & Kota', province: 'DI Yogyakarta', umk: 2315000 },
+  'semarang': { label: 'Jawa Tengah - Kota Semarang', province: 'Jawa Tengah', umk: 3243969 },
+  'lombok': { label: 'NTB - Lombok (Mataram / Senggigi)', province: 'NTB', umk: 2685000 },
+  'labuan_bajo': { label: 'NTT - Labuan Bajo (Manggarai Barat)', province: 'NTT', umk: 2450000 },
+  'medan': { label: 'Sumatera Utara - Kota Medan', province: 'Sumatera Utara', umk: 3769000 },
+  'makassar': { label: 'Sulawesi Selatan - Kota Makassar', province: 'Sulawesi Selatan', umk: 3643000 },
+  'custom': { label: 'Custom UMK (Input Nilai Sendiri)', province: 'Custom', umk: 3200000 },
+};
+
 // --- CORE LOGIC (THE BRAIN) ---
 const ThelokaBrain = {
   calculateRevenue: (rooms: number, monthlyTargets: any[]) => {
@@ -113,13 +148,23 @@ const ThelokaBrain = {
     return { monthlyBreakdown, yearlyStats, avgOcc, avgArr };
   },
 
-  getDynamicManning: (rooms: number, hasRestaurant: boolean) => {
+  getDynamicManning: (rooms: number, hasRestaurant: boolean, baseUmk: number = 3130000) => {
+    // Proportional salary multipliers based on Indonesian Hospitality Standards
+    const rnf = Math.round(baseUmk / 10000) * 10000;
+    const rnfPlus = Math.round((baseUmk * 1.06) / 10000) * 10000;
+    const eng = Math.round((baseUmk * 1.18) / 10000) * 10000;
+    const spv = Math.round((baseUmk * 1.56) / 10000) * 10000;
+    const chef = Math.round((baseUmk * 1.72) / 10000) * 10000;
+    const mgr = Math.round((baseUmk * 2.8) / 10000) * 10000;
+    const execMgr = Math.round((baseUmk * 3.1) / 10000) * 10000;
+    const gm = Math.round((baseUmk * 7.8) / 10000) * 10000;
+
     return {
       fo: {
         roles: [
-          { role: 'Front Office Manager', salary: 9000000, count: rooms > 20 ? 1 : 0 },
-          { role: 'FO Supervisor', salary: 5000000, count: Math.ceil(rooms / 40) },
-          { role: 'GSA / Bell Driver', salary: 3400000, count: Math.max(2, Math.ceil(rooms / 10)) },
+          { role: 'Front Office Manager', salary: mgr, count: rooms > 20 ? 1 : 0 },
+          { role: 'FO Supervisor', salary: spv, count: Math.ceil(rooms / 40) },
+          { role: 'GSA / Bell Driver', salary: rnfPlus, count: Math.max(2, Math.ceil(rooms / 10)) },
         ],
         expenses: [
           { name: 'Guest Supplies & Amenities', type: 'percent', value: 1.0 }, 
@@ -130,10 +175,10 @@ const ThelokaBrain = {
       },
       hk: {
         roles: [
-          { role: 'Exec Housekeeper', salary: 10000000, count: rooms > 30 ? 1 : 0 },
-          { role: 'HK Supervisor', salary: 5000000, count: Math.ceil(rooms / 25) },
-          { role: 'HK Attendant', salary: 3200000, count: Math.ceil(rooms / 6) },
-          { role: 'Gardener/Pool', salary: 3200000, count: Math.max(1, Math.ceil(rooms / 15)) },
+          { role: 'Exec Housekeeper', salary: execMgr, count: rooms > 30 ? 1 : 0 },
+          { role: 'HK Supervisor', salary: spv, count: Math.ceil(rooms / 25) },
+          { role: 'HK Attendant', salary: rnf, count: Math.ceil(rooms / 6) },
+          { role: 'Gardener/Pool', salary: rnf, count: Math.max(1, Math.ceil(rooms / 15)) },
         ],
         expenses: [
           { name: 'Cleaning Supplies', type: 'percent', value: 1.5 },
@@ -145,11 +190,11 @@ const ThelokaBrain = {
       },
       fb: {
         roles: hasRestaurant ? [
-          { role: 'F&B Manager', salary: 10000000, count: rooms > 40 ? 1 : 0 },
-          { role: 'Chef / Kitchen', salary: 5500000, count: Math.max(2, Math.ceil(rooms / 8)) },
-          { role: 'Waiter/Waitress', salary: 3200000, count: Math.max(2, Math.ceil(rooms / 8)) },
+          { role: 'F&B Manager', salary: execMgr, count: rooms > 40 ? 1 : 0 },
+          { role: 'Chef / Kitchen', salary: chef, count: Math.max(2, Math.ceil(rooms / 8)) },
+          { role: 'Waiter/Waitress', salary: rnf, count: Math.max(2, Math.ceil(rooms / 8)) },
         ] : [
-          { role: 'Breakfast Cook (Casual)', salary: 3200000, count: Math.ceil(rooms / 20) },
+          { role: 'Breakfast Cook (Casual)', salary: rnf, count: Math.ceil(rooms / 20) },
         ],
         expenses: [
           { name: 'Cost of Food (HPP)', type: 'percent', value: 32.0 },
@@ -160,8 +205,8 @@ const ThelokaBrain = {
       },
       pomec: {
         roles: [
-          { role: 'Chief Engineering', salary: 9000000, count: rooms > 30 ? 1 : 0 },
-          { role: 'Engineering Staff', salary: 3800000, count: Math.max(1, Math.ceil(rooms / 15)) },
+          { role: 'Chief Engineering', salary: mgr, count: rooms > 30 ? 1 : 0 },
+          { role: 'Engineering Staff', salary: eng, count: Math.max(1, Math.ceil(rooms / 15)) },
         ],
         expenses: [
           { name: 'Electricity & Water (Utility)', type: 'percent', value: 5.0 },
@@ -172,10 +217,10 @@ const ThelokaBrain = {
       },
       admin: {
         roles: [
-          { role: 'General Manager', salary: 25000000, count: 1 },
-          { role: 'Chief Accountant', salary: 10000000, count: 1 },
-          { role: 'HR Manager', salary: 8000000, count: rooms > 40 ? 1 : 0 },
-          { role: 'Security', salary: 3400000, count: Math.max(3, Math.ceil(rooms / 10)) },
+          { role: 'General Manager', salary: gm, count: 1 },
+          { role: 'Chief Accountant', salary: execMgr, count: 1 },
+          { role: 'HR Manager', salary: mgr, count: rooms > 40 ? 1 : 0 },
+          { role: 'Security', salary: rnfPlus, count: Math.max(3, Math.ceil(rooms / 10)) },
         ],
         expenses: [
           { name: 'Legal & Licenses', type: 'fixed', value: 5000000 },
@@ -186,8 +231,8 @@ const ThelokaBrain = {
       },
       sales: {
         roles: [
-          { role: 'Sales Manager', salary: 10000000, count: 1 },
-          { role: 'Marcom / Reservation', salary: 4500000, count: Math.max(1, Math.ceil(rooms / 30)) },
+          { role: 'Sales Manager', salary: execMgr, count: 1 },
+          { role: 'Marcom / Reservation', salary: Math.round((baseUmk * 1.4) / 10000) * 10000, count: Math.max(1, Math.ceil(rooms / 30)) },
         ],
         expenses: [
           { name: 'Digital Marketing Ads', type: 'percent', value: 2.5 },
@@ -199,7 +244,7 @@ const ThelokaBrain = {
   },
 
   generateProjection: (basicInput: any, revenueData: any) => {
-    const { rooms, hasRestaurant, fbRatio, otherStreams } = basicInput;
+    const { rooms, hasRestaurant, fbRatio, otherStreams, customUmk } = basicInput;
     const annualRoomRev = Number(revenueData.yearlyStats.roomRevenue);
     let annualFbRev = 0;
     if (hasRestaurant) {
@@ -216,7 +261,7 @@ const ThelokaBrain = {
     });
     annualOtherRev = processedOtherStreams.reduce((acc: number, curr: any) => acc + curr.total, 0);
     const annualTotalRev = annualRoomRev + annualFbRev + annualOtherRev;
-    const DEPT_STRUCTURE: any = ThelokaBrain.getDynamicManning(rooms, hasRestaurant);
+    const DEPT_STRUCTURE: any = ThelokaBrain.getDynamicManning(rooms, hasRestaurant, customUmk || 3130000);
 
     const calcDept = (deptCode: string) => {
       const roles = JSON.parse(JSON.stringify(DEPT_STRUCTURE[deptCode].roles));
@@ -363,6 +408,8 @@ export default function App() {
     adr: 2500000, 
     targetOcc: 70, 
     type: 'Resort',
+    umkArea: 'bali_gianyar',
+    customUmk: 3130000,
     feeModel: '15_percent', 
     customFee: { revPct: 15, baseRevPct: 5, gopPct: 10 },
     hasRestaurant: true,
@@ -417,6 +464,8 @@ export default function App() {
   const [longTermData, setLongTermData] = useState<any>(null);
   const [growthParams, setGrowthParams] = useState({ revGrowth: 0.05, costInflation: 0.03 });
   const [dashboardTimeframe, setDashboardTimeframe] = useState(10); 
+  const [isExportModalOpen, setExportModalOpen] = useState(false);
+  const [exportModalDeptFilter, setExportModalDeptFilter] = useState<string[]>([]); 
 
   const [competitors, setCompetitors] = useState<any[]>([]);
   const [isScanning, setIsScanning] = useState(false);
@@ -585,6 +634,44 @@ export default function App() {
 
   const handlePrint = () => window.print();
 
+  const applyUmkScaleToAllDepartments = (newUmk: number) => {
+    const umk = Math.max(1000000, newUmk);
+    const dynamicManning = ThelokaBrain.getDynamicManning(basicInput.rooms, basicInput.hasRestaurant, umk);
+    
+    setProjectedData((prev: any) => {
+      const base = prev || getCurrentProjectedData();
+      const updatedData = JSON.parse(JSON.stringify(base));
+      
+      Object.keys(updatedData.depts).forEach((deptKey) => {
+        const defaultRoles = dynamicManning[deptKey]?.roles || [];
+        const currentRoles = updatedData.depts[deptKey].roles;
+        
+        currentRoles.forEach((r: any) => {
+          const matchingDef = defaultRoles.find((def: any) => def.role === r.role);
+          if (matchingDef) {
+            r.salary = matchingDef.salary;
+          } else {
+            const oldUmk = basicInput.customUmk || 3130000;
+            r.salary = Math.round((r.salary * (umk / oldUmk)) / 10000) * 10000;
+          }
+        });
+
+        // Recalculate department payroll
+        const payroll = currentRoles.reduce((acc: number, r: any) => acc + (r.count * r.salary * 1.2 * 12), 0);
+        updatedData.depts[deptKey].payroll = payroll;
+      });
+
+      if (longTermData) {
+        const lt = ThelokaBrain.generateLongTerm(updatedData, growthParams);
+        setLongTermData(lt);
+      }
+      return updatedData;
+    });
+
+    setBasicInput(prev => ({ ...prev, customUmk: umk }));
+    alert(`Standar gaji seluruh staf berhasil disesuaikan dengan UMK ${formatIDR(umk)}/bulan! Setiap posisi tetap dapat Anda edit manual.`);
+  };
+
   // -- DEPARTMENT HANDLERS --
   const updateRole = (dept: string, idx: number, field: string, val: any) => {
     if (!projectedData) return;
@@ -643,6 +730,71 @@ export default function App() {
     }
   };
 
+  // Baseline initial calculation so departments and reports are ready immediately
+  useEffect(() => {
+    if (!projectedData) {
+      const revenueDetails = ThelokaBrain.calculateRevenue(basicInput.rooms, monthlyTargets);
+      const data: any = ThelokaBrain.generateProjection(basicInput, revenueDetails);
+      data.revenueDetails = revenueDetails;
+      setProjectedData(data);
+      const lt = ThelokaBrain.generateLongTerm(data, growthParams);
+      setLongTermData(lt);
+    }
+  }, []);
+
+  // Helper to obtain current projected data safely (memoized/fallback)
+  const getCurrentProjectedData = () => {
+    if (projectedData) return projectedData;
+    const revenueDetails = ThelokaBrain.calculateRevenue(basicInput.rooms, monthlyTargets);
+    const data: any = ThelokaBrain.generateProjection(basicInput, revenueDetails);
+    data.revenueDetails = revenueDetails;
+    return data;
+  };
+
+  /**
+   * Helper function to export current departmental payroll and expense data into CSV format
+   * Supports external processing via standard RFC 4180 CSV, UTF-8 BOM, and configurable scopes/modes.
+   */
+  const exportDepartmentalCSV = (
+    deptFilter?: string[], 
+    mode: 'comprehensive' | 'flat' | 'summary' = 'comprehensive',
+    triggerDownload: boolean = true
+  ): string => {
+    const currentData = getCurrentProjectedData();
+    const input = {
+      depts: currentData.depts,
+      revenue: currentData.revenue,
+      property: {
+        name: basicInput.name,
+        location: basicInput.location,
+        address: basicInput.address,
+        rooms: basicInput.rooms,
+        type: basicInput.type,
+      }
+    };
+    
+    if (triggerDownload) {
+      return exportDepartmentalDataToCSV(input, undefined, {
+        departmentFilter: deptFilter,
+        mode: mode,
+      });
+    } else {
+      return generateDepartmentalCSV(input, {
+        departmentFilter: deptFilter,
+        mode: mode,
+      });
+    }
+  };
+
+  // Expose on window for external scripts/testing/automation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).exportDepartmentalCSV = exportDepartmentalCSV;
+      (window as any).exportDepartmentalDataToCSV = exportDepartmentalDataToCSV;
+      (window as any).generateDepartmentalCSV = generateDepartmentalCSV;
+    }
+  }, [projectedData, basicInput, monthlyTargets]);
+
   // -- MANAGEMENT EARNINGS CALCULATIONS --
   const mEarnings = useMemo(() => {
     if (!projectedData || !longTermData) return null;
@@ -694,10 +846,27 @@ export default function App() {
         <button onClick={() => setActiveView('dashboard')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'dashboard' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><LayoutDashboard className="w-4 h-4 mr-3" /> Dashboard Summary</button>
         <button onClick={() => setActiveView('earnings')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'earnings' ? 'bg-indigo-600 font-bold shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:bg-slate-800'}`}><Coins className="w-4 h-4 mr-3 text-yellow-400" /> Management Fee</button>
 
+        <div className="pt-4 px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Strategic Feasibility</div>
+        <button onClick={() => setActiveView('bep_sensitivity')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'bep_sensitivity' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Calculator className="w-4 h-4 mr-3" /> BEP & Sensitivity</button>
+        <button onClick={() => setActiveView('scenarios')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'scenarios' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><GitCompare className="w-4 h-4 mr-3" /> Multi-Scenario (3-Way)</button>
+        <button onClick={() => setActiveView('manning_benchmark')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'manning_benchmark' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Activity className="w-4 h-4 mr-3" /> Manning Health & KPI</button>
+        <button onClick={() => setActiveView('tax_service')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'tax_service' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Receipt className="w-4 h-4 mr-3" /> Tax (PB1) & Service Charge</button>
+        <button onClick={() => setActiveView('capex_roi')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'capex_roi' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Wrench className="w-4 h-4 mr-3" /> CAPEX & Payback ROI</button>
+        <button onClick={() => setActiveView('budgeting')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'budgeting' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><History className="w-4 h-4 mr-3" /> Budget vs Actual YoY</button>
+
         <div className="pt-4 px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Field Operations</div>
         <button onClick={() => setActiveView('property_survey')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'property_survey' ? 'bg-orange-600 font-bold shadow-lg shadow-orange-500/20' : 'text-slate-400 hover:bg-slate-800'}`}><ClipboardCheck className="w-4 h-4 mr-3" /> Property Survey</button>
 
-        <div className="pt-4 px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">OpEx Departments</div>
+        <div className="pt-4 px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest flex justify-between items-center">
+          <span>OpEx Departments</span>
+          <button 
+            onClick={() => { setExportModalDeptFilter([]); setExportModalOpen(true); }}
+            title="Export Departmental Payroll & Expenses to CSV"
+            className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold flex items-center hover:underline transition-all lowercase"
+          >
+            <FileSpreadsheet className="w-3 h-3 mr-1" /> export csv
+          </button>
+        </div>
         <button onClick={() => setActiveView('room_div')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'room_div' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><BedDouble className="w-4 h-4 mr-3" /> Rooms (FO & HK)</button>
         <button onClick={() => setActiveView('fb_div')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'fb_div' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Utensils className="w-4 h-4 mr-3" /> Food & Beverage</button>
         <button onClick={() => setActiveView('pomec_div')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'pomec_div' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Wrench className="w-4 h-4 mr-3" /> POMEC (Eng)</button>
@@ -1111,11 +1280,30 @@ export default function App() {
     
     return (
       <div className="space-y-6 animate-fade-in max-w-6xl mx-auto pt-6">
-         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-slate-800 uppercase tracking-tighter">Departmental Deep-Dive: <span className="text-blue-600">{type.replace('_div', '').toUpperCase()}</span></h2>
-          <button onClick={() => setActiveView('dashboard')} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center hover:bg-slate-800 transition-all shadow-md">
-            <LayoutDashboard className="w-4 h-4 mr-2" /> Return to Summary
-          </button>
+         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-800 uppercase tracking-tighter">Departmental Deep-Dive: <span className="text-blue-600">{type.replace('_div', '').toUpperCase()}</span></h2>
+            <p className="text-xs text-slate-500 mt-1">Staff headcount, monthly payroll, and operational expenses.</p>
+          </div>
+          <div className="flex items-center flex-wrap gap-2">
+            <button 
+              onClick={() => { setExportModalDeptFilter(keys); setExportModalOpen(true); }}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center transition-all shadow-sm"
+              title="Configure and download CSV for these departments"
+            >
+              <FileSpreadsheet className="w-4 h-4 mr-1.5" /> Export {type.replace('_div', '').toUpperCase()} CSV
+            </button>
+            <button 
+              onClick={() => exportDepartmentalCSV(keys, 'flat')}
+              className="bg-white hover:bg-slate-50 text-slate-700 px-3 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center transition-all border border-slate-200 shadow-sm"
+              title="Quick download flat CSV for external ETL / script ingestion"
+            >
+              <Download className="w-4 h-4 mr-1.5 text-blue-600" /> Quick CSV (ETL)
+            </button>
+            <button onClick={() => setActiveView('dashboard')} className="bg-slate-900 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center hover:bg-slate-800 transition-all shadow-md">
+              <LayoutDashboard className="w-4 h-4 mr-1.5" /> Return to Summary
+            </button>
+          </div>
         </div>
         {keys.map(key => (
           <DeptTable 
@@ -1147,7 +1335,16 @@ export default function App() {
       <div className="space-y-6 animate-fade-in max-w-6xl mx-auto pt-6">
         <div className="flex justify-between items-center border-b border-slate-100 pb-4">
           <div><h2 className="text-2xl font-bold text-slate-800">Executive Summary</h2><p className="text-xs text-slate-500 font-bold uppercase mt-1">{basicInput.name} • {basicInput.address}</p></div>
-          <div className="bg-emerald-100 text-emerald-800 px-4 py-1.5 rounded-full text-sm font-bold">Projected GOP: {formatPercent(gop / revenue.total)}</div>
+          <div className="flex items-center space-x-3">
+             <button 
+               onClick={() => { setExportModalDeptFilter([]); setExportModalOpen(true); }}
+               className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 rounded-full text-xs font-bold flex items-center transition-all shadow-sm"
+               title="Export Departmental Payroll & Expense Data to CSV"
+             >
+               <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5" /> Export Dept. CSV
+             </button>
+             <div className="bg-emerald-100 text-emerald-800 px-4 py-1.5 rounded-full text-sm font-bold">Projected GOP: {formatPercent(gop / revenue.total)}</div>
+          </div>
         </div>
 
         {longTermData && (
@@ -1334,7 +1531,16 @@ export default function App() {
        <div className="bg-white p-8 rounded-2xl shadow-lg animate-fade-in max-w-4xl mx-auto border border-slate-200 print:p-0">
          <div className="flex justify-between items-center mb-8 border-b pb-6">
            <div><h2 className="text-2xl font-bold text-slate-900">Consolidated P&L Projection</h2><div className="text-slate-500 text-sm mt-1 font-bold">{basicInput.name}</div></div>
-           <button onClick={handlePrint} className="text-white bg-blue-900 px-4 py-2 rounded-lg text-sm font-bold flex items-center print:hidden"><Download className="w-4 h-4 mr-2" /> PDF Report</button>
+           <div className="flex items-center space-x-2 print:hidden">
+             <button 
+               onClick={() => { setExportModalDeptFilter([]); setExportModalOpen(true); }}
+               className="text-white bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded-lg text-sm font-bold flex items-center shadow transition-all"
+               title="Export Departmental Payroll & Expense Data to CSV"
+             >
+               <FileSpreadsheet className="w-4 h-4 mr-2" /> Export Dept. CSV
+             </button>
+             <button onClick={handlePrint} className="text-white bg-blue-900 px-4 py-2 rounded-lg text-sm font-bold flex items-center print:hidden"><Download className="w-4 h-4 mr-2" /> PDF Report</button>
+           </div>
          </div>
          <div className="space-y-2 text-sm">
            <div className="flex justify-between font-bold bg-slate-50 p-2 rounded"><span>TOTAL REVENUE</span><span>{formatIDR(revenue.total)}</span></div>
@@ -1399,6 +1605,77 @@ export default function App() {
                   </div>
                 </div>
                 <p className="text-[10px] text-blue-500 mt-2 italic font-medium">* Merubah nilai di atas akan mereset rincian target di menu Revenue Management.</p>
+             </div>
+           </div>
+           
+           {/* Regional UMK Configuration */}
+           <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+             <div className="flex justify-between items-center mb-3 border-b border-slate-100 pb-2">
+               <div>
+                 <h3 className="font-bold text-slate-800 flex items-center">
+                   <Users className="w-5 h-5 mr-2 text-indigo-600" />
+                   Standar Gaji & UMK Regional ({REGIONAL_UMK_DB[basicInput.umkArea]?.province || 'Indonesia'})
+                 </h3>
+                 <p className="text-xs text-slate-500 mt-0.5">
+                   Gaji seluruh departemen dapat disinkronkan otomatis mengikuti UMK acuan kota/kabupaten properti.
+                 </p>
+               </div>
+               <span className="text-xs font-mono font-bold bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-lg border border-indigo-100">
+                 {formatIDR(basicInput.customUmk)} / bln
+               </span>
+             </div>
+
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+               <div>
+                 <label className="block text-xs font-bold text-slate-600 uppercase mb-1">
+                   Pilih Kota / Kabupaten Wisata
+                 </label>
+                 <select 
+                   value={basicInput.umkArea || 'bali_gianyar'}
+                   onChange={(e) => {
+                     const key = e.target.value;
+                     const selected = REGIONAL_UMK_DB[key];
+                     if (selected) {
+                       setBasicInput(prev => ({ ...prev, umkArea: key, customUmk: selected.umk }));
+                     }
+                   }}
+                   className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500"
+                 >
+                   {Object.entries(REGIONAL_UMK_DB).map(([k, item]) => (
+                     <option key={k} value={k}>
+                       {item.label} — {formatIDR(item.umk)}
+                     </option>
+                   ))}
+                 </select>
+               </div>
+
+               <div>
+                 <label className="block text-xs font-bold text-slate-600 uppercase mb-1">
+                   Nilai UMK Acuan (Rp / Bulan)
+                 </label>
+                 <input 
+                   type="number"
+                   value={basicInput.customUmk || 3130000}
+                   onChange={(e) => {
+                     const val = parseFloat(e.target.value) || 0;
+                     setBasicInput(prev => ({ ...prev, customUmk: val, umkArea: 'custom' }));
+                   }}
+                   className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                 />
+               </div>
+             </div>
+
+             <div className="mt-4 pt-3 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-indigo-50/40 p-3 rounded-xl">
+               <div className="text-xs text-indigo-900 leading-relaxed">
+                 <span className="font-bold">Skala Otomatis:</span> Staf biasa (~1.05x UMK), Spv (~1.55x), Manager (~3x), GM (~7.8x).
+               </div>
+               <button 
+                 type="button"
+                 onClick={() => applyUmkScaleToAllDepartments(basicInput.customUmk || 3130000)}
+                 className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center shadow transition-all shrink-0"
+               >
+                 <Sparkles className="w-3.5 h-3.5 mr-1.5 text-yellow-300" /> Terapkan Skala UMK ke Semua Posisi
+               </button>
              </div>
            </div>
            
@@ -1617,10 +1894,75 @@ export default function App() {
            {activeView === 'property_survey' && renderPropertySurvey()}
            {activeView === 'dashboard' && renderDashboard()}
            {activeView === 'earnings' && renderEarningsReport()}
+           {activeView === 'bep_sensitivity' && (
+             <BreakEvenSensitivity 
+               basicInput={basicInput} 
+               projectedData={getCurrentProjectedData()} 
+               monthlyTargets={monthlyTargets} 
+             />
+           )}
+           {activeView === 'scenarios' && (
+             <ScenarioComparison 
+               basicInput={basicInput} 
+               projectedData={getCurrentProjectedData()} 
+               monthlyTargets={monthlyTargets} 
+               onApplyScenario={(modInput: any, modTargets: any[]) => {
+                 setBasicInput(modInput);
+                 setMonthlyTargets(modTargets);
+                 const rev = ThelokaBrain.calculateRevenue(modInput.rooms, modTargets);
+                 const data: any = ThelokaBrain.generateProjection(modInput, rev);
+                 data.revenueDetails = rev;
+                 setProjectedData(data);
+                 const lt = ThelokaBrain.generateLongTerm(data, growthParams);
+                 setLongTermData(lt);
+                 alert(`Skenario berhasil diadopsi! Target Okupansi menjadi ${modInput.targetOcc}% dan ADR menjadi ${formatIDR(modInput.adr)}.`);
+               }}
+             />
+           )}
+           {activeView === 'manning_benchmark' && (
+             <ManningBenchmark 
+               basicInput={basicInput} 
+               projectedData={getCurrentProjectedData()} 
+               onApplyUmkScale={applyUmkScaleToAllDepartments}
+               onUpdateRole={updateRole}
+               onAddRole={addRole}
+               onRemoveRole={removeRole}
+               onUpdateBasicInput={(field: string, val: any) => {
+                 setBasicInput(prev => ({ ...prev, [field]: val }));
+               }}
+             />
+           )}
+           {activeView === 'tax_service' && (
+             <TaxServiceCharge 
+               basicInput={basicInput} 
+               projectedData={getCurrentProjectedData()} 
+             />
+           )}
+           {activeView === 'capex_roi' && (
+             <CapexPayback 
+               basicInput={basicInput} 
+               projectedData={getCurrentProjectedData()} 
+               longTermData={longTermData || ThelokaBrain.generateLongTerm(getCurrentProjectedData(), growthParams)} 
+             />
+           )}
+           {activeView === 'budgeting' && (
+             <HistoricalBudgeting 
+               basicInput={basicInput} 
+               projectedData={getCurrentProjectedData()} 
+             />
+           )}
            {['room_div', 'fb_div', 'pomec_div', 'admin_div', 'sales_div'].includes(activeView) && renderDepartmentDetail(activeView)}
            {activeView === 'pnl' && renderPnL()}
         </main>
       </div>
+
+      <ExportCsvModal
+        isOpen={isExportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        projectedData={getCurrentProjectedData()}
+        basicInput={basicInput}
+        initialDeptFilter={exportModalDeptFilter}
+      />
     </div>
   );
 }
