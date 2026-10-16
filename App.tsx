@@ -59,7 +59,10 @@ import {
   GitCompare,
   Activity,
   Receipt,
-  History
+  History,
+  Landmark,
+  Info,
+  HelpCircle
 } from 'lucide-react';
 import { 
   exportDepartmentalDataToCSV, 
@@ -285,10 +288,18 @@ const ThelokaBrain = {
       pomec: calcDept('pomec'), admin: calcDept('admin'), sales: calcDept('sales'),
     };
 
+    const activeFixedCharges = (basicInput.fixedCharges || []).filter((fc: any) => fc.active);
+    const totalFixedChargesAnnual = activeFixedCharges.reduce((acc: number, fc: any) => acc + ((Number(fc.monthlyAmount) || 0) * 12), 0);
+
     return {
       revenue: { room: annualRoomRev, fb: annualFbRev, other: annualOtherRev, streams: processedOtherStreams, total: annualTotalRev },
       depts,
-      occupancy: revenueData.avgOcc
+      occupancy: revenueData.avgOcc,
+      fixedCharges: (basicInput.fixedCharges || []).map((fc: any) => ({
+        ...fc,
+        annualAmount: (Number(fc.monthlyAmount) || 0) * 12
+      })),
+      totalFixedChargesAnnual
     };
   },
 
@@ -296,6 +307,7 @@ const ThelokaBrain = {
     const { revGrowth, costInflation } = growthParams;
     let projections = [];
     const y1TotalExp = (Object.values(year1Data.depts) as any[]).reduce((a: number,b: any) => a + Number(b.payroll) + Number(b.totalExpense), 0);
+    const fixedChargesAnnual = Number(year1Data.totalFixedChargesAnnual) || 0;
     for(let i=0; i<10; i++) {
       const year = i + 1;
       const rFactor = Math.pow(1 + (Number(revGrowth)), i); 
@@ -303,7 +315,8 @@ const ThelokaBrain = {
       const rev = Number(year1Data.revenue.total) * rFactor;
       const exp = y1TotalExp * cFactor;
       const gop = rev - exp;
-      projections.push({ year, revenue: rev, expense: exp, gop: gop, margin: gop / rev });
+      const netCashflow = gop - fixedChargesAnnual;
+      projections.push({ year, revenue: rev, expense: exp, gop: gop, fixedCharges: fixedChargesAnnual, netCashflow, margin: gop / rev });
     }
     return projections;
   }
@@ -417,6 +430,14 @@ export default function App() {
     otherStreams: [
       { id: 1, name: 'Laundry', value: 1.5, type: 'percent', active: true },
       { id: 2, name: 'Spa & Wellness', value: 3.0, type: 'percent', active: true }
+    ],
+    // Non-Operating Fixed Charges (USALI Standard - Below GOP)
+    fixedCharges: [
+      { id: 'fc_rent', name: 'Biaya Sewa Lahan / Bangunan (Lease)', monthlyAmount: 25000000, active: true, category: 'Sewa Lahan/Gedung', notes: 'Sewa tanah atau bangunan properti tetap per bulan' },
+      { id: 'fc_loan', name: 'Cicilan Pinjaman & Bunga Bank (Debt Service)', monthlyAmount: 35000000, active: true, category: 'Pinjaman / Bunga Bank', notes: 'Beban bunga & cicilan pokok kredit modal kerja/investasi' },
+      { id: 'fc_insurance', name: 'Asuransi Properti & Bangunan', monthlyAmount: 5000000, active: true, category: 'Asuransi Properti', notes: 'Polis asuransi all-risk properti & liabilitas' },
+      { id: 'fc_tax_pbb', name: 'Pajak Bumi & Bangunan (PBB)', monthlyAmount: 3000000, active: true, category: 'PBB & Retribusi', notes: 'PBB tahunan dibagi 12 bulan' },
+      { id: 'fc_other', name: 'Biaya Tetap Lainnya (Retainer/Lisensi)', monthlyAmount: 2000000, active: false, category: 'Lainnya', notes: 'Audit, legal retainer, atau iuran lingkungan' }
     ]
   });
 
@@ -723,11 +744,77 @@ export default function App() {
       totalExp += item.calcValue;
     });
     data.depts[dept].totalExpense = totalExp;
-    setProjectedData(data);
+    setProjectedData({ ...data });
     if (longTermData) {
        const lt = ThelokaBrain.generateLongTerm(data, growthParams);
        setLongTermData(lt);
     }
+  };
+
+  // -- NON-OPERATING FIXED CHARGE HANDLERS (USALI Standard) --
+  const updateFixedCharge = (id: string, updates: any) => {
+    setBasicInput(prev => {
+      const updated = (prev.fixedCharges || []).map((fc: any) => fc.id === id ? { ...fc, ...updates } : fc);
+      return { ...prev, fixedCharges: updated };
+    });
+    setProjectedData((prev: any) => {
+      if (!prev) return prev;
+      const updated = (prev.fixedCharges || []).map((fc: any) => fc.id === id ? { ...fc, ...updates } : fc);
+      const totalFixedChargesAnnual = updated
+        .filter((fc: any) => fc.active)
+        .reduce((sum: number, fc: any) => sum + ((Number(fc.monthlyAmount) || 0) * 12), 0);
+      const res = { ...prev, fixedCharges: updated, totalFixedChargesAnnual };
+      if (longTermData) {
+        setLongTermData(ThelokaBrain.generateLongTerm(res, growthParams));
+      }
+      return res;
+    });
+  };
+
+  const addFixedCharge = () => {
+    const newCharge = {
+      id: `fc_${Date.now()}`,
+      name: 'Biaya Tetap Tambahan',
+      monthlyAmount: 5000000,
+      active: true,
+      category: 'Lainnya',
+      notes: 'Beban tetap non-operasional baru'
+    };
+    setBasicInput(prev => ({
+      ...prev,
+      fixedCharges: [...(prev.fixedCharges || []), newCharge]
+    }));
+    setProjectedData((prev: any) => {
+      if (!prev) return prev;
+      const updated = [...(prev.fixedCharges || []), newCharge];
+      const totalFixedChargesAnnual = updated
+        .filter((fc: any) => fc.active)
+        .reduce((sum: number, fc: any) => sum + ((Number(fc.monthlyAmount) || 0) * 12), 0);
+      const res = { ...prev, fixedCharges: updated, totalFixedChargesAnnual };
+      if (longTermData) {
+        setLongTermData(ThelokaBrain.generateLongTerm(res, growthParams));
+      }
+      return res;
+    });
+  };
+
+  const removeFixedCharge = (id: string) => {
+    setBasicInput(prev => ({
+      ...prev,
+      fixedCharges: (prev.fixedCharges || []).filter((fc: any) => fc.id !== id)
+    }));
+    setProjectedData((prev: any) => {
+      if (!prev) return prev;
+      const updated = (prev.fixedCharges || []).filter((fc: any) => fc.id !== id);
+      const totalFixedChargesAnnual = updated
+        .filter((fc: any) => fc.active)
+        .reduce((sum: number, fc: any) => sum + ((Number(fc.monthlyAmount) || 0) * 12), 0);
+      const res = { ...prev, fixedCharges: updated, totalFixedChargesAnnual };
+      if (longTermData) {
+        setLongTermData(ThelokaBrain.generateLongTerm(res, growthParams));
+      }
+      return res;
+    });
   };
 
   // Baseline initial calculation so departments and reports are ready immediately
@@ -1331,6 +1418,12 @@ export default function App() {
     const totalPayroll = deptValues.reduce((a: number, b: any) => a + (b.payroll as number), 0);
     const totalExpense = deptValues.reduce((a: number, b: any) => a + (b.totalExpense as number), 0);
     const gop = revenue.total - totalPayroll - totalExpense;
+    const fixedChargesList = basicInput.fixedCharges || [];
+    const activeFixedCharges = fixedChargesList.filter((fc: any) => fc.active);
+    const totalFixedChargesAnnual = activeFixedCharges.reduce((acc: number, fc: any) => acc + ((Number(fc.monthlyAmount) || 0) * 12), 0);
+    const fee = basicInput.feeModel === '15_percent' ? revenue.total * (basicInput.customFee.revPct / 100) : (revenue.total * (basicInput.customFee.baseRevPct / 100)) + (Math.max(0, gop) * (basicInput.customFee.gopPct / 100));
+    const netCashFlow = gop - fee - totalFixedChargesAnnual;
+
     return (
       <div className="space-y-6 animate-fade-in max-w-6xl mx-auto pt-6">
         <div className="flex justify-between items-center border-b border-slate-100 pb-4">
@@ -1374,8 +1467,10 @@ export default function App() {
                       <tr className="text-xs text-slate-500 border-b">
                          <th className="p-3 text-left">Period</th>
                          <th className="p-3">Revenue</th>
-                         <th className="p-3">Total Cost</th>
-                         <th className="p-3 text-emerald-700">GOP</th>
+                         <th className="p-3">Operating Cost</th>
+                         <th className="p-3 text-blue-900 font-bold">GOP</th>
+                         <th className="p-3 text-rose-600">Fixed Charges</th>
+                         <th className="p-3 text-emerald-700 font-bold">Net Cash Flow</th>
                          <th className="p-3">Margin</th>
                       </tr>
                    </thead>
@@ -1385,7 +1480,9 @@ export default function App() {
                             <td className="p-3 text-left font-bold text-slate-700">Year {d.year}</td>
                             <td className="p-3 text-slate-600">{formatIDR(d.revenue)}</td>
                             <td className="p-3 text-red-400">({formatIDR(d.expense)})</td>
-                            <td className="p-3 font-bold text-emerald-700">{formatIDR(d.gop)}</td>
+                            <td className="p-3 font-bold text-blue-900">{formatIDR(d.gop)}</td>
+                            <td className="p-3 text-rose-600 font-mono text-xs">({formatIDR(d.fixedCharges || totalFixedChargesAnnual)})</td>
+                            <td className="p-3 font-bold text-emerald-700">{formatIDR(d.netCashflow ?? (d.gop - totalFixedChargesAnnual))}</td>
                             <td className="p-3 text-slate-500">{formatPercent(d.margin)}</td>
                          </tr>
                       ))}
@@ -1395,18 +1492,31 @@ export default function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-            <div className="text-sm text-slate-500 mb-1">Total Revenue</div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
+          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+            <div className="text-xs text-slate-400 font-bold uppercase mb-1">Total Revenue</div>
             <div className="text-2xl font-bold text-blue-900">{formatIDR(revenue.total)}</div>
+            <div className="text-[11px] text-slate-500 mt-1">100% Topline Income</div>
           </div>
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-             <div className="text-sm text-slate-500 mb-1">Total Expenses</div>
+          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+             <div className="text-xs text-slate-400 font-bold uppercase mb-1">Operating Expenses</div>
             <div className="text-2xl font-bold text-rose-600">{formatIDR(totalPayroll + totalExpense)}</div>
+            <div className="text-[11px] text-slate-500 mt-1">{formatPercent((totalPayroll + totalExpense) / revenue.total)} dari Revenue</div>
           </div>
-          <div className="bg-blue-900 text-white p-6 rounded-2xl shadow-lg">
-             <div className="text-sm text-blue-200 mb-1">Gross Operating Profit</div>
-            <div className="text-3xl font-bold text-yellow-400">{formatIDR(gop)}</div>
+          <div className="bg-blue-900 text-white p-5 rounded-2xl shadow-md">
+             <div className="text-xs text-blue-300 font-bold uppercase mb-1">Gross Operating Profit (GOP)</div>
+            <div className="text-2xl font-bold text-yellow-400">{formatIDR(gop)}</div>
+            <div className="text-[11px] text-blue-200 mt-1">Margin: {formatPercent(gop / revenue.total)} (USALI)</div>
+          </div>
+          <div className="bg-emerald-900 text-white p-5 rounded-2xl shadow-md">
+             <div className="text-xs text-emerald-300 font-bold uppercase mb-1 flex items-center justify-between">
+               <span>Net Cash Flow Pemilik</span>
+               <Landmark className="w-4 h-4 text-emerald-400" />
+             </div>
+            <div className={`text-2xl font-bold ${netCashFlow >= 0 ? 'text-emerald-300' : 'text-rose-400'}`}>
+              {formatIDR(netCashFlow)}
+            </div>
+            <div className="text-[11px] text-emerald-200 mt-1">Setelah Sewa, Pinjaman & Fee</div>
           </div>
         </div>
       </div>
@@ -1527,10 +1637,19 @@ export default function App() {
      let fee = basicInput.feeModel === '15_percent' ? revenue.total * (basicInput.customFee.revPct / 100) : (revenue.total * (basicInput.customFee.baseRevPct / 100)) + (Math.max(0, gop) * (basicInput.customFee.gopPct / 100));
      const nop = gop - fee;
 
+     const fixedChargesList = basicInput.fixedCharges || [];
+     const activeFixedCharges = fixedChargesList.filter((fc: any) => fc.active);
+     const totalFixedChargesAnnual = activeFixedCharges.reduce((acc: number, fc: any) => acc + ((Number(fc.monthlyAmount) || 0) * 12), 0);
+     const netCashFlow = nop - totalFixedChargesAnnual;
+     const netMargin = revenue.total > 0 ? (netCashFlow / revenue.total) : 0;
+
      return (
        <div className="bg-white p-8 rounded-2xl shadow-lg animate-fade-in max-w-4xl mx-auto border border-slate-200 print:p-0">
          <div className="flex justify-between items-center mb-8 border-b pb-6">
-           <div><h2 className="text-2xl font-bold text-slate-900">Consolidated P&L Projection</h2><div className="text-slate-500 text-sm mt-1 font-bold">{basicInput.name}</div></div>
+           <div>
+             <h2 className="text-2xl font-bold text-slate-900">Consolidated P&L Projection</h2>
+             <div className="text-slate-500 text-sm mt-1 font-bold">{basicInput.name} • Standar USALI Perhotelan</div>
+           </div>
            <div className="flex items-center space-x-2 print:hidden">
              <button 
                onClick={() => { setExportModalDeptFilter([]); setExportModalOpen(true); }}
@@ -1542,15 +1661,99 @@ export default function App() {
              <button onClick={handlePrint} className="text-white bg-blue-900 px-4 py-2 rounded-lg text-sm font-bold flex items-center print:hidden"><Download className="w-4 h-4 mr-2" /> PDF Report</button>
            </div>
          </div>
-         <div className="space-y-2 text-sm">
-           <div className="flex justify-between font-bold bg-slate-50 p-2 rounded"><span>TOTAL REVENUE</span><span>{formatIDR(revenue.total)}</span></div>
-           <div className="flex justify-between font-bold bg-slate-50 p-2 rounded mt-2"><span>OPERATING EXPENSES</span><span className="text-rose-600">({formatIDR(totalPayroll + totalExpense)})</span></div>
-           <div className="flex justify-between font-bold text-xl text-blue-900 bg-blue-50 p-3 mt-6 rounded"><span>GROSS OPERATING PROFIT</span><span>{formatIDR(gop)}</span></div>
-           <div className="flex justify-between items-center p-3 bg-slate-100/50 rounded mt-4 border border-dashed border-slate-300">
-              <span className="text-xs font-bold text-slate-500 uppercase">Management Fee Adjustment</span>
-              <span className="text-sm font-bold text-indigo-700">({formatIDR(fee)})</span>
+         <div className="space-y-3 text-sm">
+           <div className="flex justify-between font-bold bg-slate-50 p-3 rounded-xl border border-slate-100">
+             <span>TOTAL REVENUE (TOPLINE)</span>
+             <span className="text-blue-950 font-mono text-base">{formatIDR(revenue.total)}</span>
            </div>
-           <div className="flex justify-between font-bold text-xl text-white bg-slate-900 p-4 rounded-lg mt-4 shadow-lg"><span>NET OPERATING PROFIT (NOP)</span><span>{formatIDR(nop)}</span></div>
+           <div className="flex justify-between font-bold bg-slate-50 p-3 rounded-xl border border-slate-100">
+             <span>OPERATING EXPENSES (Payroll & Dept Opex)</span>
+             <span className="text-rose-600 font-mono text-base">({formatIDR(totalPayroll + totalExpense)})</span>
+           </div>
+           
+           <div className="flex justify-between items-center font-bold text-lg text-blue-900 bg-blue-50/80 p-3.5 rounded-xl border border-blue-200">
+             <div>
+               <span>GROSS OPERATING PROFIT (GOP)</span>
+               <div className="text-[11px] font-normal text-blue-600">Standar USALI: Mengukur performa murni operasional tim hotel</div>
+             </div>
+             <div className="text-right">
+               <span className="font-mono text-xl">{formatIDR(gop)}</span>
+               <div className="text-xs text-blue-700 font-mono font-medium">{formatPercent(gop / revenue.total)} GOP Margin</div>
+             </div>
+           </div>
+
+           <div className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-dashed border-slate-300">
+              <div>
+                <span className="text-xs font-bold text-slate-700 uppercase">Management Fee Adjustment</span>
+                <div className="text-[10px] text-slate-500">Model: {basicInput.feeModel.replace('_', ' ')}</div>
+              </div>
+              <span className="text-sm font-bold text-indigo-700 font-mono">({formatIDR(fee)})</span>
+           </div>
+
+           <div className="flex justify-between items-center font-bold text-base text-slate-800 bg-slate-100/70 p-3 rounded-xl border border-slate-200">
+             <span>NET OPERATING PROFIT (NOP / GOP After Fee)</span>
+             <span className="font-mono text-base">{formatIDR(nop)}</span>
+           </div>
+
+           {/* Non-Operating Fixed Charges Section (Below-GOP) */}
+           <div className="mt-6 pt-5 border-t-2 border-slate-200">
+             <div className="flex justify-between items-center mb-3">
+               <div>
+                 <span className="text-xs font-bold text-rose-800 uppercase tracking-wider flex items-center">
+                   <Landmark className="w-4 h-4 mr-1.5 text-rose-600" />
+                   Non-Operating Fixed Charges (Sewa, Pinjaman & Beban Tetap)
+                 </span>
+                 <p className="text-[11px] text-slate-500 mt-0.5">
+                   Kewajiban finansial & modal tetap pemilik (di bawah GOP) sesuai standar USALI
+                 </p>
+               </div>
+               <span className="text-xs font-mono font-bold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200">
+                 Total: ({formatIDR(totalFixedChargesAnnual)})
+               </span>
+             </div>
+
+             <div className="space-y-1.5 pl-3 border-l-2 border-rose-200 bg-rose-50/20 py-2 rounded-r-xl">
+               {activeFixedCharges.length === 0 ? (
+                 <div className="text-xs text-slate-400 italic py-1">
+                   Tidak ada biaya tetap non-operasional aktif (dapat diatur di menu Setup Properti).
+                 </div>
+               ) : (
+                 activeFixedCharges.map((fc: any) => {
+                   const annualVal = (Number(fc.monthlyAmount) || 0) * 12;
+                   return (
+                     <div key={fc.id} className="flex justify-between items-center text-xs text-slate-700 py-1 hover:bg-white px-2 rounded transition-colors">
+                       <div className="flex items-center space-x-2">
+                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                         <span className="font-semibold text-slate-800">{fc.name}</span>
+                         <span className="text-[10px] text-slate-500 font-mono">({formatIDR(fc.monthlyAmount)}/bln)</span>
+                         {fc.notes && <span className="text-[10px] text-slate-400 italic hidden sm:inline">• {fc.notes}</span>}
+                       </div>
+                       <span className="font-mono text-rose-600 font-bold">({formatIDR(annualVal)})</span>
+                     </div>
+                   );
+                 })
+               )}
+             </div>
+           </div>
+
+           {/* Final Bottom Line: Net Cash Flow to Owner */}
+           <div className="flex justify-between items-center font-bold text-xl text-white bg-slate-900 p-4 rounded-xl mt-5 shadow-xl">
+             <div>
+               <span className="flex items-center">
+                 NET CASH FLOW / EBITDA (LABA BERSIH AKHIR PEMILIK)
+                 <Landmark className="w-4 h-4 ml-2 text-emerald-400" />
+               </span>
+               <div className="text-[11px] font-normal text-slate-400 mt-0.5">
+                 Laba bersih yang dibawa pulang pemilik setelah melunasi seluruh operasional, sewa lahan, dan cicilan pinjaman bank
+               </div>
+             </div>
+             <div className="text-right">
+               <div className={netCashFlow >= 0 ? "text-emerald-400 text-2xl font-mono" : "text-rose-400 text-2xl font-mono"}>
+                 {formatIDR(netCashFlow)}
+               </div>
+               <div className="text-xs text-slate-300 font-mono font-medium">{formatPercent(netMargin)} Net Margin</div>
+             </div>
+           </div>
          </div>
        </div>
      );
@@ -1764,6 +1967,167 @@ export default function App() {
                    )}
                 </div>
              ))}
+           </div>
+
+           {/* Non-Operating Fixed Charges Configuration (Sewa, Pinjaman & Fixed Charges Lainnya - Standar USALI) */}
+           <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 border-b border-slate-100 pb-3">
+               <div>
+                 <h3 className="font-bold text-slate-800 flex items-center">
+                   <Landmark className="w-5 h-5 mr-2 text-rose-600" />
+                   Biaya Sewa, Pinjaman & Fixed Charges Non-Operasional
+                 </h3>
+                 <p className="text-xs text-slate-500 mt-0.5">
+                   Standar USALI (Below GOP): Biaya komitmen tetap pemilik yang wajib dibayar terlepas dari kondisi okupansi kamar.
+                 </p>
+               </div>
+               <button 
+                 type="button"
+                 onClick={addFixedCharge}
+                 className="text-xs bg-rose-600 hover:bg-rose-700 text-white font-bold px-3 py-1.5 rounded-xl flex items-center shadow-sm transition-all shrink-0"
+               >
+                 <Plus className="w-3.5 h-3.5 mr-1" /> Tambah Biaya Tetap Baru
+               </button>
+             </div>
+
+             {/* USALI Educational Note */}
+             <div className="mb-4 bg-amber-50/80 border border-amber-200/90 rounded-xl p-3.5 text-xs text-amber-900 flex items-start gap-3">
+               <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+               <div className="leading-relaxed">
+                 <span className="font-bold">Di mana posisi Biaya Sewa atau Pinjaman? (Standar USALI):</span>
+                 <div className="mt-1 text-slate-700 text-[11px] space-y-1">
+                   <p>Dalam standar akuntansi perhotelan USALI, biaya sewa tanah/gedung dan cicilan/bunga kredit bank diletakkan pada kategori <strong>Non-Operating Expenses (di bawah GOP)</strong>.</p>
+                   <div className="flex flex-wrap gap-2 pt-1 font-medium">
+                     <span className="bg-white/80 px-2 py-0.5 rounded border border-amber-200 text-amber-900">
+                       ✅ Rumus GOP Hotel Tetap Objektif
+                     </span>
+                     <span className="bg-white/80 px-2 py-0.5 rounded border border-amber-200 text-amber-900">
+                       ✅ Rumus Management Fee Tetap Utuh
+                     </span>
+                     <span className="bg-white/80 px-2 py-0.5 rounded border border-amber-200 text-amber-900">
+                       ✅ Otomatis Dihitung ke BEP Total & Net Cash Flow
+                     </span>
+                   </div>
+                 </div>
+               </div>
+             </div>
+
+             {/* Items List */}
+             <div className="space-y-3">
+               {(basicInput.fixedCharges || []).map((fc: any) => {
+                 const monthlyVal = Number(fc.monthlyAmount) || 0;
+                 const annualVal = monthlyVal * 12;
+                 return (
+                   <div 
+                     key={fc.id} 
+                     className={`p-4 rounded-xl border transition-all ${
+                       fc.active 
+                         ? 'bg-rose-50/40 border-rose-200 shadow-sm' 
+                         : 'bg-slate-50 border-slate-200 opacity-60'
+                     }`}
+                   >
+                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
+                       <div className="flex items-center space-x-2 flex-1">
+                         <input 
+                           value={fc.name}
+                           onChange={(e) => updateFixedCharge(fc.id, { name: e.target.value })}
+                           className={`bg-white border rounded px-2.5 py-1 text-sm font-bold outline-none focus:ring-2 focus:ring-rose-500 w-full max-w-sm ${
+                             fc.active ? 'text-slate-800 border-rose-300' : 'text-slate-500 border-slate-200'
+                           }`}
+                           placeholder="Nama Biaya Tetap"
+                         />
+                         <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-white text-rose-700 border border-rose-200 shrink-0">
+                           {fc.category || 'Fixed Charge'}
+                         </span>
+                       </div>
+
+                       <div className="flex items-center space-x-3 shrink-0">
+                         <button 
+                           type="button"
+                           onClick={() => updateFixedCharge(fc.id, { active: !fc.active })}
+                           className="focus:outline-none"
+                           title={fc.active ? 'Nonaktifkan Biaya Ini' : 'Aktifkan Biaya Ini'}
+                         >
+                           {fc.active ? (
+                             <ToggleRight className="w-8 h-8 text-rose-600 cursor-pointer" />
+                           ) : (
+                             <ToggleLeft className="w-8 h-8 text-slate-300 cursor-pointer" />
+                           )}
+                         </button>
+                         <button 
+                           type="button"
+                           onClick={() => removeFixedCharge(fc.id)}
+                           className="text-slate-300 hover:text-rose-600 transition-colors"
+                           title="Hapus Biaya Tetap Ini"
+                         >
+                           <Trash2 className="w-4 h-4" />
+                         </button>
+                       </div>
+                     </div>
+
+                     {fc.active && (
+                       <div className="flex flex-wrap items-center gap-3 mt-3 pt-2 border-t border-rose-100 text-xs">
+                         <div className="flex items-center space-x-1.5">
+                           <span className="text-slate-500 font-medium">Nominal:</span>
+                           <div className="relative">
+                             <span className="absolute left-2.5 top-1.5 text-slate-400 font-bold text-xs">Rp</span>
+                             <input 
+                               type="number"
+                               value={fc.monthlyAmount}
+                               onChange={(e) => updateFixedCharge(fc.id, { monthlyAmount: parseFloat(e.target.value) || 0 })}
+                               className="w-36 bg-white border border-rose-300 rounded-lg pl-8 pr-2 py-1 font-mono font-bold text-rose-950 text-sm focus:ring-2 focus:ring-rose-500 outline-none"
+                             />
+                           </div>
+                           <span className="text-slate-500 font-semibold">/ bln</span>
+                         </div>
+
+                         <div className="flex items-center space-x-2 text-[11px] font-mono bg-white px-2.5 py-1 rounded-md border border-rose-200 text-rose-800">
+                           <span>= {formatIDR(annualVal)} / thn</span>
+                         </div>
+
+                         <div className="flex-1 min-w-[200px]">
+                           <input 
+                             type="text"
+                             value={fc.notes || ''}
+                             onChange={(e) => updateFixedCharge(fc.id, { notes: e.target.value })}
+                             placeholder="Keterangan / Detail kontrak (opsional)..."
+                             className="w-full bg-white/70 border border-slate-200 rounded px-2 py-1 text-xs text-slate-600 outline-none focus:bg-white"
+                           />
+                         </div>
+                       </div>
+                     )}
+                   </div>
+                 );
+               })}
+             </div>
+
+             {/* Total Fixed Charges Summary */}
+             {(() => {
+               const activeList = (basicInput.fixedCharges || []).filter((fc: any) => fc.active);
+               const totalMonthly = activeList.reduce((sum: number, fc: any) => sum + (Number(fc.monthlyAmount) || 0), 0);
+               const totalAnnual = totalMonthly * 12;
+               return (
+                 <div className="mt-4 pt-3 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 bg-slate-900 text-white p-3.5 rounded-xl">
+                   <div>
+                     <div className="text-xs font-bold text-rose-300 uppercase tracking-wider flex items-center">
+                       <Landmark className="w-3.5 h-3.5 mr-1 text-rose-400" />
+                       Total Beban Tetap Non-Operasional Aktif ({activeList.length} Item)
+                     </div>
+                     <div className="text-[11px] text-slate-400 mt-0.5">
+                       Otomatis masuk ke laporan P&L konsolidasi & perhitungan BEP Pemilik
+                     </div>
+                   </div>
+                   <div className="text-right">
+                     <div className="text-base font-mono font-bold text-yellow-400">
+                       {formatIDR(totalMonthly)} <span className="text-xs font-normal text-slate-300">/ bulan</span>
+                     </div>
+                     <div className="text-xs text-slate-300 font-mono">
+                       {formatIDR(totalAnnual)} / tahun
+                     </div>
+                   </div>
+                 </div>
+               );
+             })()}
            </div>
         </div>
         

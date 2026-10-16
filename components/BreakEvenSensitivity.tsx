@@ -23,7 +23,8 @@ import {
   RefreshCw,
   Zap,
   Building,
-  Users
+  Users,
+  Landmark
 } from 'lucide-react';
 
 interface BreakEvenProps {
@@ -50,6 +51,7 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
   monthlyTargets
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'methodology' | 'cost_breakdown' | 'stress_test'>('overview');
+  const [bepPerspective, setBepPerspective] = useState<'owner_total' | 'operational_gop'>('owner_total');
   const [customFixedCostAdjustment, setCustomFixedCostAdjustment] = useState<number>(0);
   
   // Stress Test Simulation Parameters
@@ -135,18 +137,41 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
       });
     });
 
+    // 3. Non-Operating Fixed Charges (Sewa Lahan/Gedung, Cicilan Pinjaman Bank, Asuransi, PBB, dll)
+    let totalNonOperatingFixed = 0;
+    (basicInput?.fixedCharges || []).forEach((fc: any) => {
+      if (fc.active) {
+        const monthlyVal = Number(fc.monthlyAmount) || 0;
+        const annualVal = monthlyVal * 12;
+        totalNonOperatingFixed += annualVal;
+        fixedItems.push({
+          dept: 'Non-Operating / Below-GOP',
+          deptKey: 'non_operating',
+          name: fc.name,
+          category: `Below-GOP Fixed Commitment (${fc.category || 'Fixed Charge'})`,
+          type: 'fixed',
+          monthlyValue: monthlyVal,
+          annualValue: annualVal,
+          basis: 'Fixed Contract / Debt Obligation',
+          reason: fc.notes || 'Kewajiban finansial & modal tetap pemilik (sewa/pinjaman bank/asuransi) yang wajib dibayar terlepas dari kondisi okupansi kamar hotel.'
+        });
+      }
+    });
+
     return {
       fixedItems,
       variableItems,
       totalFixedPayroll,
       totalFixedOperating,
-      totalFixedCostBase: totalFixedPayroll + totalFixedOperating,
+      totalNonOperatingFixed,
+      totalFixedOperatingCost: totalFixedPayroll + totalFixedOperating,
+      totalFixedCostBase: totalFixedPayroll + totalFixedOperating + totalNonOperatingFixed,
       totalVariableExpenses,
       totalRevenue,
       roomRevenue,
       fbRevenue
     };
-  }, [projectedData]);
+  }, [projectedData, basicInput]);
 
   // Break-Even Calculations
   const bepCalculations = useMemo(() => {
@@ -166,7 +191,15 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
 
     const adjustedPayroll = costClassification.totalFixedPayroll * wageHikeFactor;
     const adjustedFixedOperating = costClassification.totalFixedOperating;
-    const totalFixedCost = adjustedPayroll + adjustedFixedOperating + customFixedCostAdjustment;
+    const totalNonOperatingFixed = costClassification.totalNonOperatingFixed;
+
+    const totalFixedOperatingCost = adjustedPayroll + adjustedFixedOperating;
+    const totalFixedCostWithOwner = totalFixedOperatingCost + totalNonOperatingFixed + customFixedCostAdjustment;
+
+    // Active chosen fixed cost for current view mode
+    const totalFixedCost = bepPerspective === 'owner_total' 
+      ? totalFixedCostWithOwner 
+      : (totalFixedOperatingCost + customFixedCostAdjustment);
 
     // Adjusted variable cost
     let adjustedVariableExpenses = 0;
@@ -183,20 +216,34 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
 
     const variableCostRatio = totalRevenue > 0 ? (adjustedVariableExpenses / totalRevenue) : 0.15;
     const contributionMarginRatio = Math.max(0.01, 1 - variableCostRatio);
-
-    // 1. Break-Even Revenue (Total Pendapatan Minimal agar GOP = 0)
-    // Formula USALI: BEP Revenue = Total Fixed Costs / Contribution Margin Ratio
-    const breakEvenRevenue = totalFixedCost / contributionMarginRatio;
-
-    // Proportion of room revenue to total revenue
     const roomRevRatio = totalRevenue > 0 ? (roomRevenue / totalRevenue) : 0.8;
-    const breakEvenRoomRevenue = breakEvenRevenue * roomRevRatio;
 
-    // 2. Break-Even Rooms Sold & Occupancy
+    // 1. Break-Even Revenue for Active Perspective
+    const breakEvenRevenue = totalFixedCost / contributionMarginRatio;
+    const breakEvenRoomRevenue = breakEvenRevenue * roomRevRatio;
     const breakEvenRoomsSoldYear = currentAdr > 0 ? Math.round(breakEvenRoomRevenue / currentAdr) : 0;
     const breakEvenRoomsSoldDay = Math.ceil(breakEvenRoomsSoldYear / 365);
     const breakEvenOccupancy = totalRoomNightsYear > 0 
       ? Math.min(100, Math.max(0, (breakEvenRoomsSoldYear / totalRoomNightsYear) * 100))
+      : 0;
+
+    // 2. Dual Comparison Metrics:
+    // A. Operational BEP (GOP = 0)
+    const bepGopRevenue = totalFixedOperatingCost / contributionMarginRatio;
+    const bepGopRoomRev = bepGopRevenue * roomRevRatio;
+    const bepGopRoomsSoldYear = currentAdr > 0 ? Math.round(bepGopRoomRev / currentAdr) : 0;
+    const bepGopRoomsSoldDay = Math.ceil(bepGopRoomsSoldYear / 365);
+    const bepGopOccupancy = totalRoomNightsYear > 0
+      ? Math.min(100, Math.max(0, (bepGopRoomsSoldYear / totalRoomNightsYear) * 100))
+      : 0;
+
+    // B. Total Owner BEP (Net Cash Flow = 0, includes Rent & Loan)
+    const bepOwnerRevenue = totalFixedCostWithOwner / contributionMarginRatio;
+    const bepOwnerRoomRev = bepOwnerRevenue * roomRevRatio;
+    const bepOwnerRoomsSoldYear = currentAdr > 0 ? Math.round(bepOwnerRoomRev / currentAdr) : 0;
+    const bepOwnerRoomsSoldDay = Math.ceil(bepOwnerRoomsSoldYear / 365);
+    const bepOwnerOccupancy = totalRoomNightsYear > 0
+      ? Math.min(100, Math.max(0, (bepOwnerRoomsSoldYear / totalRoomNightsYear) * 100))
       : 0;
 
     // 3. Break-Even ADR at Current Occupancy
@@ -212,6 +259,9 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
     return {
       totalFixedPayroll: adjustedPayroll,
       totalFixedOperating: adjustedFixedOperating,
+      totalNonOperatingFixed,
+      totalFixedOperatingCost,
+      totalFixedCostWithOwner,
       totalFixedCost,
       totalVariableExpenses: adjustedVariableExpenses,
       variableCostRatio,
@@ -221,6 +271,12 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
       breakEvenRoomsSoldYear,
       breakEvenRoomsSoldDay,
       breakEvenOccupancy,
+      bepGopRevenue,
+      bepGopRoomsSoldDay,
+      bepGopOccupancy,
+      bepOwnerRevenue,
+      bepOwnerRoomsSoldDay,
+      bepOwnerOccupancy,
       breakEvenAdrAtCurrentOcc,
       marginOfSafetyRevenue,
       marginOfSafetyPct,
@@ -231,7 +287,7 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
       roomRevRatio,
       totalRoomNightsYear
     };
-  }, [projectedData, basicInput, customFixedCostAdjustment, costClassification, stressWageHikePct, stressUtilityHikePct, stressOtaCommHikePct]);
+  }, [projectedData, basicInput, customFixedCostAdjustment, costClassification, stressWageHikePct, stressUtilityHikePct, stressOtaCommHikePct, bepPerspective]);
 
   // 2D Sensitivity Matrix: Occupancy vs ADR
   const sensitivityMatrix = useMemo(() => {
@@ -395,14 +451,64 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
       {/* TAB 1: OVERVIEW & SENSITIVITY MATRIX */}
       {activeTab === 'overview' && (
         <div className="space-y-6">
-          {/* Quick Explainer Callout */}
-          <div className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white p-5 rounded-2xl shadow-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div className="space-y-1">
-              <span className="text-[10px] uppercase font-bold text-yellow-400 tracking-wider flex items-center">
-                <Info className="w-3.5 h-3.5 mr-1" /> Intisari Titik Impas (BEP)
+          {/* Perspective Switcher */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+            <div>
+              <span className="text-xs font-bold text-slate-800 flex items-center">
+                <Landmark className="w-4 h-4 mr-1.5 text-rose-600" />
+                Sudut Pandang Perhitungan Titik Impas (BEP)
               </span>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Bandingkan impas operasional murni (GOP = 0) vs impas total pemilik setelah sewa lahan & pinjaman bank.
+              </p>
+            </div>
+            <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0">
+              <button
+                type="button"
+                onClick={() => setBepPerspective('owner_total')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center ${
+                  bepPerspective === 'owner_total'
+                    ? 'bg-rose-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Landmark className="w-3.5 h-3.5 mr-1.5" />
+                BEP Total Pemilik (Sewa + Pinjaman)
+              </button>
+              <button
+                type="button"
+                onClick={() => setBepPerspective('operational_gop')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center ${
+                  bepPerspective === 'operational_gop'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Building className="w-3.5 h-3.5 mr-1.5" />
+                BEP Operasional Murni (GOP = 0)
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Explainer Callout with Dynamic Perspective */}
+          <div className={`text-white p-5 rounded-2xl shadow-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4 ${
+            bepPerspective === 'owner_total' 
+              ? 'bg-gradient-to-r from-rose-950 via-slate-900 to-indigo-950' 
+              : 'bg-gradient-to-r from-blue-900 to-indigo-900'
+          }`}>
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <span className="text-[10px] uppercase font-bold text-yellow-400 tracking-wider flex items-center">
+                  <Info className="w-3.5 h-3.5 mr-1" /> Intisari Titik Impas: {bepPerspective === 'owner_total' ? 'Sudut Pandang Pemilik (Net Cash Flow = 0)' : 'Sudut Pandang Operasional (GOP = 0)'}
+                </span>
+                {costClassification.totalNonOperatingFixed > 0 && bepPerspective === 'owner_total' && (
+                  <span className="text-[10px] font-mono bg-rose-500/30 text-rose-200 border border-rose-400/30 px-2 py-0.5 rounded">
+                    Termasuk Sewa & Pinjaman {formatIDR(costClassification.totalNonOperatingFixed)}/thn
+                  </span>
+                )}
+              </div>
               <p className="text-sm font-medium text-slate-100">
-                Hotel Anda butuh minimal <span className="font-bold text-yellow-300 font-mono">{bepCalculations.breakEvenOccupancy.toFixed(1)}% okupansi</span> ({bepCalculations.breakEvenRoomsSoldDay} kamar/malam) atau omset tahunan <span className="font-bold text-yellow-300 font-mono">{formatIDR(bepCalculations.breakEvenRevenue)}</span> agar seluruh biaya operasional tertutupi (GOP = 0).
+                Hotel Anda butuh minimal <span className="font-bold text-yellow-300 font-mono">{bepCalculations.breakEvenOccupancy.toFixed(1)}% okupansi</span> ({bepCalculations.breakEvenRoomsSoldDay} kamar/malam) atau omset tahunan <span className="font-bold text-yellow-300 font-mono">{formatIDR(bepCalculations.breakEvenRevenue)}</span> agar seluruh {bepPerspective === 'owner_total' ? 'biaya operasional, sewa lahan, dan cicilan pinjaman bank tertutupi (Net Cash Flow = 0)' : 'biaya operasional harian tertutupi (GOP = 0)'}.
               </p>
             </div>
             <button
@@ -412,6 +518,51 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
               Lihat Bedah Rumus <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
             </button>
           </div>
+
+          {/* Dual Comparison Card: GOP BEP vs Owner Total BEP */}
+          {costClassification.totalNonOperatingFixed > 0 && (
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`p-3.5 rounded-xl border transition-all ${
+                bepPerspective === 'operational_gop' ? 'bg-blue-50 border-blue-300 shadow-sm' : 'bg-white border-slate-200'
+              }`}>
+                <div className="text-[11px] font-bold text-blue-800 uppercase flex items-center">
+                  <Building className="w-3.5 h-3.5 mr-1" /> 1. BEP Operasional (GOP = 0)
+                </div>
+                <div className="text-2xl font-black text-blue-950 mt-1">
+                  {bepCalculations.bepGopOccupancy.toFixed(1)}% <span className="text-xs font-semibold text-slate-500">({bepCalculations.bepGopRoomsSoldDay} kamar/hari)</span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Omset: <span className="font-mono font-semibold">{formatIDR(bepCalculations.bepGopRevenue)}</span>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl border bg-white border-slate-200 flex flex-col justify-center">
+                <div className="text-[11px] font-bold text-rose-700 uppercase flex items-center">
+                  <Landmark className="w-3.5 h-3.5 mr-1" /> + Sewa, Pinjaman & Fixed Charges
+                </div>
+                <div className="text-xl font-black text-rose-900 mt-1">
+                  {formatIDR(costClassification.totalNonOperatingFixed)} <span className="text-xs font-semibold text-slate-500">/ thn</span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  {formatIDR(costClassification.totalNonOperatingFixed / 12)} / bulan (Below GOP)
+                </div>
+              </div>
+
+              <div className={`p-3.5 rounded-xl border transition-all ${
+                bepPerspective === 'owner_total' ? 'bg-rose-50 border-rose-300 shadow-sm' : 'bg-white border-slate-200'
+              }`}>
+                <div className="text-[11px] font-bold text-rose-800 uppercase flex items-center">
+                  <Landmark className="w-3.5 h-3.5 mr-1" /> 2. BEP Total Pemilik (Net Cashflow = 0)
+                </div>
+                <div className="text-2xl font-black text-rose-950 mt-1">
+                  {bepCalculations.bepOwnerOccupancy.toFixed(1)}% <span className="text-xs font-semibold text-slate-500">({bepCalculations.bepOwnerRoomsSoldDay} kamar/hari)</span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Omset: <span className="font-mono font-semibold">{formatIDR(bepCalculations.bepOwnerRevenue)}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* KPI Cards: The Core Break-Even Figures */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -656,8 +807,14 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
                   <span>• Biaya Tetap Opex (R&M, Lisensi, dll):</span>
                   <span className="font-bold">{formatIDR(bepCalculations.totalFixedOperating)}</span>
                 </div>
+                {bepCalculations.totalNonOperatingFixed > 0 && (
+                  <div className="flex justify-between text-rose-700 font-semibold">
+                    <span>• Sewa, Pinjaman & Fixed Charges Pemilik:</span>
+                    <span>{formatIDR(bepCalculations.totalNonOperatingFixed)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-blue-900 border-t pt-1 font-bold">
-                  <span>Total Biaya Tetap (FC):</span>
+                  <span>Total Biaya Tetap ({bepPerspective === 'owner_total' ? 'FC Total Pemilik' : 'FC Operasional'}):</span>
                   <span>{formatIDR(bepCalculations.totalFixedCost)}</span>
                 </div>
               </div>
@@ -747,6 +904,40 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
 
           </div>
 
+          {/* Standar USALI Explainer for Rent & Loan */}
+          <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white rounded-2xl p-6 sm:p-7 shadow-lg space-y-4 border border-slate-700">
+            <div className="flex items-center space-x-2 text-rose-400 text-xs font-bold uppercase tracking-wider">
+              <Landmark className="w-4 h-4" />
+              <span>Standar USALI: Dimana Posisi Biaya Sewa Lahan, Gedung & Pinjaman Bank?</span>
+            </div>
+            <h4 className="text-base sm:text-lg font-bold text-white">
+              Mengapa Sewa & Cicilan Pinjaman Bank Masuk Kategori "Non-Operating Expenses" (Below GOP)?
+            </h4>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Dalam standar akuntansi perhotelan internasional <strong>USALI (*Uniform System of Accounts for the Lodging Industry*)</strong>, seluruh beban sewa lahan/gedung, cicilan pokok & bunga pinjaman bank, asuransi aset, serta PBB ditempatkan tepat di bawah <strong>Gross Operating Profit (GOP)</strong>.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-slate-200">
+              <div className="bg-white/10 p-4 rounded-xl border border-white/10 space-y-1">
+                <span className="font-bold text-yellow-300 block">1. Menjaga Tolok Ukur GOP Objektif</span>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  GOP mengukur efisiensi murni operasional General Manager (GM) dan tim hotel. Menilai kecakapan GM tidak boleh dipengaruhi apakah pemilik hotel berutang bank 80% atau mendanai dengan modal sendiri.
+                </p>
+              </div>
+              <div className="bg-white/10 p-4 rounded-xl border border-white/10 space-y-1">
+                <span className="font-bold text-yellow-300 block">2. Rumus Management Fee Tetap Utuh</span>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  Operator hotel dibayar berdasarkan % Revenue dan/atau % GOP. Menjaga sewa/pinjaman di bawah GOP memastikan tidak ada konflik kepentingan atau perubahan rumus perhitungan fee operator.
+                </p>
+              </div>
+              <div className="bg-white/10 p-4 rounded-xl border border-white/10 space-y-1">
+                <span className="font-bold text-yellow-300 block">3. Transparansi Dua Lapis BEP</span>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  Pemilik mengetahui batas minimal agar operasional mandiri (<strong>BEP Operasional</strong>: {bepCalculations.bepGopOccupancy.toFixed(1)}%) serta batas agar cicilan bank dan sewa lunas (<strong>BEP Total Pemilik</strong>: {bepCalculations.bepOwnerOccupancy.toFixed(1)}%).
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Explanation on How the 2D Sensitivity Matrix is calculated */}
           <div className="bg-slate-900 text-white p-6 rounded-2xl space-y-3">
             <h4 className="text-sm font-bold text-yellow-400 flex items-center">
@@ -804,20 +995,35 @@ export const BreakEvenSensitivity: React.FC<BreakEvenProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {/* Fixed items first */}
-                {costClassification.fixedItems.map((item, idx) => (
-                  <tr key={`fixed-${idx}`} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-3 px-3 font-bold text-slate-700">{item.dept}</td>
-                    <td className="py-3 px-3 font-semibold text-slate-800">{item.name}</td>
-                    <td className="py-3 px-3">
-                      <span className="bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded font-bold font-mono">
-                        FIXED
-                      </span>
-                    </td>
-                    <td className="py-3 px-3 text-right font-mono text-slate-600">{formatIDR(item.monthlyValue)}</td>
-                    <td className="py-3 px-3 text-right font-mono font-bold text-blue-900">{formatIDR(item.annualValue)}</td>
-                    <td className="py-3 px-3 text-slate-500 text-[11px]">{item.reason}</td>
-                  </tr>
-                ))}
+                {costClassification.fixedItems.map((item, idx) => {
+                  const isNonOperating = item.deptKey === 'non_operating';
+                  return (
+                    <tr key={`fixed-${idx}`} className={`transition-colors ${isNonOperating ? 'bg-rose-50/30 hover:bg-rose-50/60' : 'hover:bg-slate-50'}`}>
+                      <td className="py-3 px-3 font-bold text-slate-700">
+                        {isNonOperating ? (
+                          <span className="flex items-center text-rose-800 font-bold">
+                            <Landmark className="w-3.5 h-3.5 mr-1 text-rose-600 shrink-0" /> {item.dept}
+                          </span>
+                        ) : (
+                          item.dept
+                        )}
+                      </td>
+                      <td className="py-3 px-3 font-semibold text-slate-800">{item.name}</td>
+                      <td className="py-3 px-3">
+                        <span className={`px-2 py-0.5 rounded font-bold font-mono text-[10px] ${
+                          isNonOperating 
+                            ? 'bg-rose-100 text-rose-800 border border-rose-300' 
+                            : 'bg-blue-50 text-blue-700 border border-blue-200'
+                        }`}>
+                          {isNonOperating ? 'FIXED (BELOW-GOP)' : 'FIXED OPEX'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-slate-600">{formatIDR(item.monthlyValue)}</td>
+                      <td className={`py-3 px-3 text-right font-mono font-bold ${isNonOperating ? 'text-rose-900' : 'text-blue-900'}`}>{formatIDR(item.annualValue)}</td>
+                      <td className="py-3 px-3 text-slate-500 text-[11px]">{item.reason}</td>
+                    </tr>
+                  );
+                })}
 
                 {/* Variable items */}
                 {costClassification.variableItems.map((item, idx) => (
