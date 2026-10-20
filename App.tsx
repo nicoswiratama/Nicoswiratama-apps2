@@ -62,7 +62,12 @@ import {
   History,
   Landmark,
   Info,
-  HelpCircle
+  HelpCircle,
+  User,
+  LogOut,
+  Check,
+  Copy,
+  Clock
 } from 'lucide-react';
 import { 
   exportDepartmentalDataToCSV, 
@@ -77,6 +82,27 @@ import { ManningBenchmark } from './components/ManningBenchmark';
 import { TaxServiceCharge } from './components/TaxServiceCharge';
 import { CapexPayback } from './components/CapexPayback';
 import { HistoricalBudgeting } from './components/HistoricalBudgeting';
+import { PropertySelector } from './components/PropertySelector';
+import { GmailAuthModal } from './components/GmailAuthModal';
+import { SuperAdminModal } from './components/SuperAdminModal';
+import { generateAndPrintPnLPdf } from './services/pnlPdfReport';
+import { UserAccount, PropertyData, CapexSetup } from './types';
+import {
+  getStoredUsers,
+  getStoredCurrentUser,
+  saveStoredCurrentUser,
+  getStoredProperties,
+  saveStoredProperties,
+  getStoredActivePropertyId,
+  saveStoredActivePropertyId,
+  saveOrUpdateProperty,
+  createNewProperty,
+  duplicateProperty,
+  deletePropertyById,
+  getPropertiesForUser,
+  logoutCurrentUser,
+  DEFAULT_CAPEX
+} from './services/propertyStorage';
 
 /**
  * THELOKA PRO v16.1 - Dynamic AI Scaling Edition (Checkpoint Version)
@@ -164,83 +190,142 @@ const ThelokaBrain = {
 
     return {
       fo: {
-        roles: [
-          { role: 'Front Office Manager', salary: mgr, count: rooms > 20 ? 1 : 0 },
+        roles: rooms <= 15 ? [
+          { role: 'GSA / Front Desk & Bell', salary: rnfPlus, count: 2 },
+        ] : rooms <= 35 ? [
+          { role: 'FO Supervisor / Senior GSA', salary: spv, count: 1 },
+          { role: 'GSA / Front Desk', salary: rnfPlus, count: 2 },
+        ] : rooms <= 70 ? [
+          { role: 'Front Office Manager', salary: mgr, count: rooms > 50 ? 1 : 0 },
+          { role: 'FO Supervisor', salary: spv, count: 1 },
+          { role: 'GSA / Bell Driver', salary: rnfPlus, count: Math.max(3, Math.ceil(rooms / 18)) },
+        ] : [
+          { role: 'Front Office Manager', salary: mgr, count: 1 },
           { role: 'FO Supervisor', salary: spv, count: Math.ceil(rooms / 40) },
-          { role: 'GSA / Bell Driver', salary: rnfPlus, count: Math.max(2, Math.ceil(rooms / 10)) },
+          { role: 'GSA / Bell Driver', salary: rnfPlus, count: Math.max(4, Math.ceil(rooms / 18)) },
         ],
         expenses: [
           { name: 'Guest Supplies & Amenities', type: 'percent', value: 1.0 }, 
-          { name: 'Uniforms & Laundry', type: 'fixed', value: 3000000 + (rooms * 20000) },
-          { name: 'Printing & Stationery', type: 'fixed', value: 2000000 + (rooms * 10000) },
-          { name: 'Comms & Internet', type: 'fixed', value: 2500000 },
+          { name: 'Uniforms & Laundry', type: 'fixed', value: 2000000 + (rooms * 15000) },
+          { name: 'Printing & Stationery', type: 'fixed', value: 1500000 + (rooms * 8000) },
+          { name: 'Comms & Internet', type: 'fixed', value: 2000000 },
         ]
       },
       hk: {
-        roles: [
-          { role: 'Exec Housekeeper', salary: execMgr, count: rooms > 30 ? 1 : 0 },
-          { role: 'HK Supervisor', salary: spv, count: Math.ceil(rooms / 25) },
-          { role: 'HK Attendant', salary: rnf, count: Math.ceil(rooms / 6) },
-          { role: 'Gardener/Pool', salary: rnf, count: Math.max(1, Math.ceil(rooms / 15)) },
+        roles: rooms <= 15 ? [
+          { role: 'Room Attendant', salary: rnf, count: Math.max(1, Math.ceil(rooms / 8)) },
+          { role: 'Gardener / Pool Attendant', salary: rnf, count: 1 },
+        ] : rooms <= 35 ? [
+          { role: 'HK Supervisor', salary: spv, count: 1 },
+          { role: 'Room Attendant', salary: rnf, count: Math.max(2, Math.ceil(rooms / 9)) },
+          { role: 'Gardener / Public Area', salary: rnf, count: 1 },
+        ] : rooms <= 70 ? [
+          { role: 'Exec Housekeeper', salary: execMgr, count: 1 },
+          { role: 'HK Supervisor', salary: spv, count: 1 },
+          { role: 'Room Attendant', salary: rnf, count: Math.ceil(rooms / 9) },
+          { role: 'Gardener / Public Area', salary: rnf, count: Math.max(1, Math.ceil(rooms / 25)) },
+        ] : [
+          { role: 'Exec Housekeeper', salary: execMgr, count: 1 },
+          { role: 'HK Supervisor', salary: spv, count: Math.ceil(rooms / 35) },
+          { role: 'Room Attendant', salary: rnf, count: Math.ceil(rooms / 9) },
+          { role: 'Gardener / Pool / Linen', salary: rnf, count: Math.max(2, Math.ceil(rooms / 25)) },
         ],
         expenses: [
-          { name: 'Cleaning Supplies', type: 'percent', value: 1.5 },
+          { name: 'Cleaning Supplies', type: 'percent', value: 1.2 },
           { name: 'Linen & Towel Replacement', type: 'percent', value: 0.8 },
-          { name: 'Guest Amenities (Soap/Shampoo)', type: 'percent', value: 2.0 },
-          { name: 'Pest Control Contract', type: 'fixed', value: 3000000 + (rooms * 15000) },
-          { name: 'Decorations & Flowers', type: 'fixed', value: 2000000 + (rooms * 10000) },
+          { name: 'Guest Amenities (Soap/Shampoo)', type: 'percent', value: 1.8 },
+          { name: 'Pest Control Contract', type: 'fixed', value: 2000000 + (rooms * 12000) },
+          { name: 'Decorations & Flowers', type: 'fixed', value: 1500000 + (rooms * 8000) },
         ]
       },
       fb: {
-        roles: hasRestaurant ? [
-          { role: 'F&B Manager', salary: execMgr, count: rooms > 40 ? 1 : 0 },
-          { role: 'Chef / Kitchen', salary: chef, count: Math.max(2, Math.ceil(rooms / 8)) },
-          { role: 'Waiter/Waitress', salary: rnf, count: Math.max(2, Math.ceil(rooms / 8)) },
-        ] : [
-          { role: 'Breakfast Cook (Casual)', salary: rnf, count: Math.ceil(rooms / 20) },
-        ],
-        expenses: [
-          { name: 'Cost of Food (HPP)', type: 'percent', value: 32.0 },
-          { name: 'Gas / Fuel (Kitchen)', type: 'percent', value: 1.5 },
-          { name: 'Chinaware/Glassware Replacement', type: 'fixed', value: 2000000 + (rooms * 10000) },
-          { name: 'Cleaning Supplies (Stewarding)', type: 'fixed', value: 1500000 + (rooms * 5000) },
+        roles: !hasRestaurant ? [] : (
+          rooms <= 15 ? [
+            { role: 'Cook / Kitchen Staff', salary: chef, count: 1 },
+            { role: 'Waiter / Service Attendant', salary: rnf, count: 1 },
+          ] : rooms <= 35 ? [
+            { role: 'Chef / Kitchen Leader', salary: chef, count: 1 },
+            { role: 'Cook Line', salary: rnfPlus, count: 1 },
+            { role: 'Waiter / Waitress', salary: rnf, count: 2 },
+          ] : rooms <= 65 ? [
+            { role: 'F&B Supervisor', salary: spv, count: 1 },
+            { role: 'Chef / Cook', salary: chef, count: 2 },
+            { role: 'Waiter / Waitress', salary: rnf, count: 3 },
+            { role: 'Kitchen Helper / Stewarding', salary: rnf, count: 1 },
+          ] : [
+            { role: 'F&B Manager', salary: execMgr, count: 1 },
+            { role: 'Head Chef', salary: chef, count: 1 },
+            { role: 'Line Cook', salary: rnfPlus, count: Math.max(2, Math.ceil(rooms / 30)) },
+            { role: 'Waiter/Waitress', salary: rnf, count: Math.max(3, Math.ceil(rooms / 20)) },
+            { role: 'Stewarding', salary: rnf, count: Math.max(1, Math.ceil(rooms / 50)) },
+          ]
+        ),
+        expenses: !hasRestaurant ? [] : [
+          { name: 'Cost of Food & Beverage (HPP)', type: 'percent', value: 30.0 },
+          { name: 'Kitchen Gas & Fuel', type: 'percent', value: 1.5 },
+          { name: 'Chinaware/Glassware Replacement', type: 'fixed', value: 1500000 + (rooms * 8000) },
+          { name: 'Cleaning Supplies (Stewarding)', type: 'fixed', value: 1200000 + (rooms * 4000) },
         ]
       },
       pomec: {
-        roles: [
-          { role: 'Chief Engineering', salary: mgr, count: rooms > 30 ? 1 : 0 },
-          { role: 'Engineering Staff', salary: eng, count: Math.max(1, Math.ceil(rooms / 15)) },
+        roles: rooms <= 20 ? [
+          { role: 'Maintenance Staff', salary: eng, count: 1 },
+        ] : rooms <= 45 ? [
+          { role: 'Senior Technician', salary: spv, count: 1 },
+          { role: 'Engineering Staff', salary: eng, count: 1 },
+        ] : [
+          { role: 'Chief Engineering', salary: mgr, count: 1 },
+          { role: 'Engineering Staff', salary: eng, count: Math.max(2, Math.ceil(rooms / 25)) },
         ],
         expenses: [
-          { name: 'Electricity & Water (Utility)', type: 'percent', value: 5.0 },
-          { name: 'R&M Building', type: 'fixed', value: 5000000 + (rooms * 50000) },
-          { name: 'R&M Equipment/Pool', type: 'fixed', value: 3000000 + (rooms * 30000) },
-          { name: 'Sparepart Stock', type: 'fixed', value: 2000000 },
+          { name: 'Electricity & Water (Utility)', type: 'percent', value: 4.8 },
+          { name: 'R&M Building', type: 'fixed', value: 3500000 + (rooms * 35000) },
+          { name: 'R&M Equipment/Pool', type: 'fixed', value: 2500000 + (rooms * 25000) },
+          { name: 'Sparepart Stock', type: 'fixed', value: 1500000 },
         ]
       },
       admin: {
-        roles: [
+        roles: rooms <= 15 ? [
+          { role: 'Villa / Ops Manager', salary: mgr, count: 1 },
+          { role: 'Accounting / Admin', salary: rnfPlus, count: 1 },
+          { role: 'Security', salary: rnf, count: 2 },
+        ] : rooms <= 40 ? [
+          { role: 'Hotel Manager', salary: execMgr, count: 1 },
+          { role: 'Finance & HR Coordinator', salary: spv, count: 1 },
+          { role: 'Security', salary: rnf, count: 2 },
+        ] : rooms <= 80 ? [
           { role: 'General Manager', salary: gm, count: 1 },
           { role: 'Chief Accountant', salary: execMgr, count: 1 },
-          { role: 'HR Manager', salary: mgr, count: rooms > 40 ? 1 : 0 },
-          { role: 'Security', salary: rnfPlus, count: Math.max(3, Math.ceil(rooms / 10)) },
+          { role: 'HR Officer', salary: spv, count: 1 },
+          { role: 'Security', salary: rnfPlus, count: 3 },
+        ] : [
+          { role: 'General Manager', salary: gm, count: 1 },
+          { role: 'Chief Accountant', salary: execMgr, count: 1 },
+          { role: 'HR Manager', salary: mgr, count: 1 },
+          { role: 'Security', salary: rnfPlus, count: Math.max(4, Math.ceil(rooms / 22)) },
         ],
         expenses: [
-          { name: 'Legal & Licenses', type: 'fixed', value: 5000000 },
-          { name: 'Travel & Entertainment', type: 'fixed', value: 5000000 + (rooms * 20000) },
-          { name: 'Office Supplies', type: 'fixed', value: 2500000 },
+          { name: 'Legal & Licenses', type: 'fixed', value: 3500000 },
+          { name: 'Travel & Entertainment', type: 'fixed', value: 3000000 + (rooms * 15000) },
+          { name: 'Office Supplies', type: 'fixed', value: 2000000 },
           { name: 'Staff Welfare/Meal', type: 'percent', value: 1.2 },
         ]
       },
       sales: {
-        roles: [
+        roles: rooms <= 20 ? [
+          { role: 'Reservation & E-Commerce', salary: rnfPlus, count: 1 },
+        ] : rooms <= 50 ? [
+          { role: 'Sales & Marcom Executive', salary: spv, count: 1 },
+          { role: 'Reservation / OTA Specialist', salary: rnfPlus, count: 1 },
+        ] : [
           { role: 'Sales Manager', salary: execMgr, count: 1 },
-          { role: 'Marcom / Reservation', salary: Math.round((baseUmk * 1.4) / 10000) * 10000, count: Math.max(1, Math.ceil(rooms / 30)) },
+          { role: 'E-Commerce / Marcom', salary: spv, count: Math.max(1, Math.ceil(rooms / 45)) },
+          { role: 'Reservation Staff', salary: rnfPlus, count: Math.max(1, Math.ceil(rooms / 35)) },
         ],
         expenses: [
-          { name: 'Digital Marketing Ads', type: 'percent', value: 2.5 },
+          { name: 'Digital Marketing Ads', type: 'percent', value: 2.2 },
           { name: 'OTA Commission (Blended)', type: 'percent', value: 2.0 },
-          { name: 'Travel Agent Fam Trip', type: 'fixed', value: 3000000 },
+          { name: 'Travel Agent Fam Trip', type: 'fixed', value: 2000000 },
         ]
       }
     };
@@ -343,12 +428,35 @@ const InputCard = ({ label, value, onChange, type="text", suffix, icon: Icon, di
   </div>
 );
 
-const DeptTable = ({ title, roles, expenseItems, revenueBasis, onUpdateRole, onAddRole, onRemoveRole, onUpdateExpenseItem, onAddExpenseItem, onRemoveExpenseItem }: any) => {
+const DeptTable = ({ 
+  title, 
+  roles, 
+  expenseItems, 
+  revenueBasis, 
+  onUpdateRole, 
+  onAddRole, 
+  onRemoveRole, 
+  onUpdateExpenseItem, 
+  onAddExpenseItem, 
+  onRemoveExpenseItem,
+  onSaveDept 
+}: any) => {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-6 animate-fade-in print-break-inside-avoid">
-      <div className="bg-slate-50 px-6 py-4 border-b border-slate-100 flex justify-between items-center">
+      <div className="bg-slate-50 px-6 py-4 border-b border-slate-100 flex flex-wrap justify-between items-center gap-2">
         <h3 className="font-bold text-slate-800 flex items-center"><Briefcase className="w-5 h-5 mr-2 text-blue-600" /> {title}</h3>
-        <div className="text-xs text-slate-500 italic bg-white px-2 py-1 rounded border">Editable Mode</div>
+        <div className="flex items-center space-x-2">
+          {onSaveDept && (
+            <button
+              onClick={onSaveDept}
+              className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center shadow-xs transition-all active:scale-95"
+              title={`Simpan perubahan departemen ${title} ke properti`}
+            >
+              <Save className="w-3.5 h-3.5 mr-1 text-yellow-300" /> Simpan {title}
+            </button>
+          )}
+          <div className="text-xs text-slate-500 italic bg-white px-2 py-1 rounded border">Editable Mode</div>
+        </div>
       </div>
       <div className="p-6">
         <div className="flex justify-between items-center mb-3">
@@ -412,43 +520,38 @@ export default function App() {
   const [activeView, setActiveView] = useState('setup');
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   
+  // -- AUTH & USER STATE --
+  const [currentUser, setCurrentUser] = useState<UserAccount>(() => getStoredCurrentUser());
+  const [properties, setProperties] = useState<PropertyData[]>(() => getStoredProperties());
+  const [activePropertyId, setActivePropertyId] = useState<string>(() => getStoredActivePropertyId());
+  const [isGmailModalOpen, setIsGmailModalOpen] = useState(false);
+  const [isSuperAdminModalOpen, setIsSuperAdminModalOpen] = useState(false);
+  const [saveStatusText, setSaveStatusText] = useState("Tersimpan Otomatis");
+
+  // Determine active property
+  const activeProperty: PropertyData = useMemo(() => {
+    return properties.find(p => p.id === activePropertyId) || properties[0];
+  }, [properties, activePropertyId]);
+
+  // Filtered properties for current user view (Super Admin sees all, regular user sees their own + shared)
+  const propertiesForCurrent = useMemo(() => {
+    return getPropertiesForUser(currentUser);
+  }, [properties, currentUser]);
+
   // -- SETUP STATE --
-  const [basicInput, setBasicInput] = useState({
-    name: 'Skyaloka Resort Bali',
-    location: 'Ubud', 
-    address: 'Jl. Richloka 88, Ubud', 
-    rooms: 80,
-    adr: 2500000, 
-    targetOcc: 70, 
-    type: 'Resort',
-    umkArea: 'bali_gianyar',
-    customUmk: 3130000,
-    feeModel: '15_percent', 
-    customFee: { revPct: 15, baseRevPct: 5, gopPct: 10 },
-    hasRestaurant: true,
-    fbRatio: 25,
-    otherStreams: [
-      { id: 1, name: 'Laundry', value: 1.5, type: 'percent', active: true },
-      { id: 2, name: 'Spa & Wellness', value: 3.0, type: 'percent', active: true }
-    ],
-    // Non-Operating Fixed Charges (USALI Standard - Below GOP)
-    fixedCharges: [
-      { id: 'fc_rent', name: 'Biaya Sewa Lahan / Bangunan (Lease)', monthlyAmount: 25000000, active: true, category: 'Sewa Lahan/Gedung', notes: 'Sewa tanah atau bangunan properti tetap per bulan' },
-      { id: 'fc_loan', name: 'Cicilan Pinjaman & Bunga Bank (Debt Service)', monthlyAmount: 35000000, active: true, category: 'Pinjaman / Bunga Bank', notes: 'Beban bunga & cicilan pokok kredit modal kerja/investasi' },
-      { id: 'fc_insurance', name: 'Asuransi Properti & Bangunan', monthlyAmount: 5000000, active: true, category: 'Asuransi Properti', notes: 'Polis asuransi all-risk properti & liabilitas' },
-      { id: 'fc_tax_pbb', name: 'Pajak Bumi & Bangunan (PBB)', monthlyAmount: 3000000, active: true, category: 'PBB & Retribusi', notes: 'PBB tahunan dibagi 12 bulan' },
-      { id: 'fc_other', name: 'Biaya Tetap Lainnya (Retainer/Lisensi)', monthlyAmount: 2000000, active: false, category: 'Lainnya', notes: 'Audit, legal retainer, atau iuran lingkungan' }
-    ]
+  const [basicInput, setBasicInput] = useState(() => {
+    const p = properties.find(item => item.id === activePropertyId) || properties[0];
+    return {
+      ...p.basicInput,
+      capex: p.capex || p.basicInput.capex || DEFAULT_CAPEX
+    };
   });
 
   // -- REVENUE MANAGEMENT STATE --
-  const [monthlyTargets, setMonthlyTargets] = useState(
-    BASE_SEASONALITY.map((occ, idx) => ({ 
-      monthIdx: idx, 
-      occ: occ * 100, 
-      arr: 2500000 
-    }))
-  );
+  const [monthlyTargets, setMonthlyTargets] = useState(() => {
+    const p = properties.find(item => item.id === activePropertyId) || properties[0];
+    return p.monthlyTargets;
+  });
 
   // -- PROPERTY SURVEY STATE --
   const [surveys, setSurveys] = useState<any[]>([]);
@@ -493,6 +596,170 @@ export default function App() {
   const [scanLog, setScanLog] = useState("");
   const [suggestedRate, setSuggestedRate] = useState({ low: 0, mid: 0, high: 0 });
   const [newCompetitor, setNewCompetitor] = useState({ name: '', rate: 0, dist: 0 });
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToastNotification = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(prev => prev === msg ? null : prev);
+    }, 4000);
+  };
+
+  // -- MULTI-PROPERTY & AUTH HANDLERS --
+  const syncPropertyChanges = (
+    updatedBasicInput: any, 
+    updatedTargets?: any[], 
+    updatedGrowth?: any, 
+    updatedCapex?: CapexSetup,
+    updatedDepts?: any,
+    updatedManningKpi?: any
+  ) => {
+    setProperties(prev => {
+      const idx = prev.findIndex(p => p.id === activePropertyId);
+      if (idx === -1) return prev;
+      const updatedList = [...prev];
+      const target = updatedList[idx];
+      const newCapex = updatedCapex || updatedBasicInput.capex || target.capex || DEFAULT_CAPEX;
+      const newDepts = updatedDepts !== undefined ? updatedDepts : (target.depts || projectedData?.depts);
+      const newManningKpi = updatedManningKpi !== undefined ? updatedManningKpi : target.customManningKpi;
+      
+      updatedList[idx] = {
+        ...target,
+        name: updatedBasicInput.name,
+        basicInput: { ...updatedBasicInput, capex: newCapex },
+        monthlyTargets: updatedTargets || target.monthlyTargets,
+        growthParams: updatedGrowth || target.growthParams,
+        capex: newCapex,
+        depts: newDepts ? JSON.parse(JSON.stringify(newDepts)) : undefined,
+        customManningKpi: newManningKpi ? JSON.parse(JSON.stringify(newManningKpi)) : undefined,
+        updatedAt: new Date().toISOString()
+      };
+      saveStoredProperties(updatedList);
+      return updatedList;
+    });
+    setSaveStatusText("Tersimpan " + new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }));
+  };
+
+  const handleSelectProperty = (propertyId: string) => {
+    setActivePropertyId(propertyId);
+    saveStoredActivePropertyId(propertyId);
+    const prop = properties.find(p => p.id === propertyId);
+    if (prop) {
+      const capexVal = prop.capex || prop.basicInput.capex || DEFAULT_CAPEX;
+      const inputVal = { ...prop.basicInput, capex: capexVal };
+      setBasicInput(inputVal);
+      setMonthlyTargets(prop.monthlyTargets);
+      const gp = prop.growthParams || { revGrowth: 0.05, costInflation: 0.03 };
+      setGrowthParams(gp);
+      const rev = ThelokaBrain.calculateRevenue(inputVal.rooms, prop.monthlyTargets);
+      let proj: any = ThelokaBrain.generateProjection(inputVal, rev);
+      
+      // If this property has saved custom departments/roles/expenses, restore them!
+      if (prop.depts) {
+        proj.depts = JSON.parse(JSON.stringify(prop.depts));
+        Object.keys(proj.depts).forEach((k) => {
+          const dept = proj.depts[k];
+          const baseRev = k === 'fb' ? rev.fb : rev.total;
+          const payroll = (dept.roles || []).reduce((acc: number, r: any) => acc + ((Number(r.count) || 0) * (Number(r.salary) || 0) * 1.2 * 12), 0);
+          dept.payroll = payroll;
+          let totalExp = 0;
+          (dept.expenseItems || []).forEach((item: any) => {
+            if (item.type === 'percent') item.calcValue = baseRev * ((Number(item.value) || 0) / 100);
+            else item.calcValue = (Number(item.value) || 0) * 12;
+            totalExp += item.calcValue;
+          });
+          dept.totalExpense = totalExp;
+        });
+      }
+
+      proj.revenueDetails = rev;
+      setProjectedData(proj);
+      const lt = ThelokaBrain.generateLongTerm(proj, gp);
+      setLongTermData(lt);
+    }
+  };
+
+  const handleSaveManning = (customKpi?: any) => {
+    const curData = getCurrentProjectedData();
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, curData.depts, customKpi);
+    showToastNotification(`Perubahan Manning & Gaji untuk "${basicInput.name}" berhasil disimpan!`);
+  };
+
+  const handleSaveDepartment = (deptType: string) => {
+    const curData = getCurrentProjectedData();
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, curData.depts);
+    const label = deptType.replace('_div', '').toUpperCase();
+    showToastNotification(`Perubahan departemen ${label} untuk "${basicInput.name}" berhasil disimpan!`);
+  };
+
+  const handleSaveCapex = () => {
+    const curData = getCurrentProjectedData();
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, curData.depts);
+    showToastNotification(`Alokasi CAPEX & Payback untuk "${basicInput.name}" berhasil disimpan!`);
+  };
+
+  const handleAddProperty = (name: string) => {
+    const newProp = createNewProperty(currentUser, name);
+    const all = getStoredProperties();
+    setProperties(all);
+    handleSelectProperty(newProp.id);
+  };
+
+  const handleDuplicateProperty = () => {
+    const cloned = duplicateProperty(currentUser, activeProperty);
+    const all = getStoredProperties();
+    setProperties(all);
+    handleSelectProperty(cloned.id);
+  };
+
+  const handleDeleteProperty = (propertyId: string) => {
+    const success = deletePropertyById(propertyId);
+    if (!success) {
+      alert("Tidak dapat menghapus satu-satunya properti yang tersisa.");
+      return;
+    }
+    const all = getStoredProperties();
+    setProperties(all);
+    handleSelectProperty(all[0].id);
+  };
+
+  const handleManualSave = () => {
+    const curData = getCurrentProjectedData();
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, curData.depts);
+    showToastNotification(`Data properti "${basicInput.name}" berhasil disimpan ke akun ${currentUser.email}!`);
+  };
+
+  const handleUpdateCapex = (newCapex: CapexSetup) => {
+    setBasicInput(prev => ({ ...prev, capex: newCapex }));
+    syncPropertyChanges({ ...basicInput, capex: newCapex }, monthlyTargets, growthParams, newCapex);
+  };
+
+  const handleSwitchUser = (user: UserAccount) => {
+    saveStoredCurrentUser(user);
+    setCurrentUser(user);
+    const userProps = getPropertiesForUser(user);
+    if (userProps.length > 0) {
+      handleSelectProperty(userProps[0].id);
+    }
+  };
+
+  const handleLoginSuccess = (user: UserAccount) => {
+    setCurrentUser(user);
+    const all = getStoredProperties();
+    setProperties(all);
+    const userProps = getPropertiesForUser(user);
+    if (userProps.length > 0) {
+      handleSelectProperty(userProps[0].id);
+    }
+  };
+
+  const handleLogout = () => {
+    const defaultUser = logoutCurrentUser();
+    setCurrentUser(defaultUser);
+    const all = getStoredProperties();
+    setProperties(all);
+    handleSelectProperty(all[0].id);
+  };
 
   // -- HANDLERS --
 
@@ -527,7 +794,9 @@ export default function App() {
   };
 
   const updateAndRecalculate = () => {
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, projectedData?.depts);
     handleGenerate();
+    showToastNotification(`Target bulanan untuk properti "${basicInput.name}" berhasil disimpan!`);
   };
 
   const optimizeRevenue = () => {
@@ -653,7 +922,12 @@ export default function App() {
     updateMonthlyFromSetup('adr', roundedRate);
   };
 
-  const handlePrint = () => window.print();
+  const handlePrint = () => {
+    generateAndPrintPnLPdf({
+      basicInput,
+      projectedData: getCurrentProjectedData(),
+    });
+  };
 
   const applyUmkScaleToAllDepartments = (newUmk: number) => {
     const umk = Math.max(1000000, newUmk);
@@ -749,6 +1023,7 @@ export default function App() {
        const lt = ThelokaBrain.generateLongTerm(data, growthParams);
        setLongTermData(lt);
     }
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, data.depts);
   };
 
   // -- NON-OPERATING FIXED CHARGE HANDLERS (USALI Standard) --
@@ -820,8 +1095,25 @@ export default function App() {
   // Baseline initial calculation so departments and reports are ready immediately
   useEffect(() => {
     if (!projectedData) {
+      const p = properties.find(item => item.id === activePropertyId) || properties[0];
       const revenueDetails = ThelokaBrain.calculateRevenue(basicInput.rooms, monthlyTargets);
       const data: any = ThelokaBrain.generateProjection(basicInput, revenueDetails);
+      if (p?.depts) {
+        data.depts = JSON.parse(JSON.stringify(p.depts));
+        Object.keys(data.depts).forEach((k) => {
+          const dept = data.depts[k];
+          const baseRev = k === 'fb' ? revenueDetails.fb : revenueDetails.total;
+          const payroll = (dept.roles || []).reduce((acc: number, r: any) => acc + ((Number(r.count) || 0) * (Number(r.salary) || 0) * 1.2 * 12), 0);
+          dept.payroll = payroll;
+          let totalExp = 0;
+          (dept.expenseItems || []).forEach((item: any) => {
+            if (item.type === 'percent') item.calcValue = baseRev * ((Number(item.value) || 0) / 100);
+            else item.calcValue = (Number(item.value) || 0) * 12;
+            totalExp += item.calcValue;
+          });
+          dept.totalExpense = totalExp;
+        });
+      }
       data.revenueDetails = revenueDetails;
       setProjectedData(data);
       const lt = ThelokaBrain.generateLongTerm(data, growthParams);
@@ -832,8 +1124,12 @@ export default function App() {
   // Helper to obtain current projected data safely (memoized/fallback)
   const getCurrentProjectedData = () => {
     if (projectedData) return projectedData;
+    const p = properties.find(item => item.id === activePropertyId) || properties[0];
     const revenueDetails = ThelokaBrain.calculateRevenue(basicInput.rooms, monthlyTargets);
     const data: any = ThelokaBrain.generateProjection(basicInput, revenueDetails);
+    if (p?.depts) {
+      data.depts = JSON.parse(JSON.stringify(p.depts));
+    }
     data.revenueDetails = revenueDetails;
     return data;
   };
@@ -923,7 +1219,45 @@ export default function App() {
           <p className="text-[9px] text-slate-400 uppercase tracking-widest">System Pro v16.1</p>
         </div>
       </div>
-      <div className="flex-1 py-6 px-3 space-y-1">
+
+      {/* User Profile & Super Admin Status in Sidebar */}
+      <div className="p-3.5 mx-3 my-2 bg-slate-800/90 rounded-2xl border border-slate-700/80 text-xs shrink-0">
+        <div className="flex items-center space-x-2.5 mb-2">
+          <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs overflow-hidden shrink-0 border border-blue-400/30">
+            {currentUser.avatar ? <img src={currentUser.avatar} alt={currentUser.name} className="w-full h-full object-cover" /> : currentUser.name[0]}
+          </div>
+          <div className="truncate flex-1">
+            <div className="font-bold text-white truncate text-xs">{currentUser.name}</div>
+            <div className="text-[10px] text-slate-400 font-mono truncate">{currentUser.email}</div>
+          </div>
+        </div>
+        
+        <div className="flex items-center justify-between pt-1 border-t border-slate-700/60">
+          <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase ${
+            currentUser.role === 'super_admin' ? 'bg-amber-400 text-slate-950 font-extrabold' : 'bg-blue-900 text-blue-200'
+          }`}>
+            {currentUser.role === 'super_admin' ? 'Super Admin' : 'Owner'}
+          </span>
+          <button
+            onClick={() => setIsGmailModalOpen(true)}
+            className="text-[10px] text-blue-300 hover:text-white font-bold transition-colors"
+          >
+            Ganti Akun
+          </button>
+        </div>
+
+        {currentUser.role === 'super_admin' && (
+          <button
+            onClick={() => setIsSuperAdminModalOpen(true)}
+            className="mt-2.5 w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-black py-1.5 px-2 rounded-xl text-[10px] flex items-center justify-center transition-all shadow-sm"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 mr-1" />
+            Super Admin Control Center
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 py-3 px-3 space-y-1">
         <div className="px-3 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Base Config</div>
         <button onClick={() => setActiveView('setup')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'setup' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><Settings className="w-4 h-4 mr-3" /> Quick Setup</button>
         <button onClick={() => setActiveView('revenue')} className={`w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition-all ${activeView === 'revenue' ? 'bg-blue-600 font-bold' : 'text-slate-400 hover:bg-slate-800'}`}><BarChart3 className="w-4 h-4 mr-3" /> Revenue Management</button>
@@ -1374,6 +1708,13 @@ export default function App() {
           </div>
           <div className="flex items-center flex-wrap gap-2">
             <button 
+              onClick={() => handleSaveDepartment(type)}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center transition-all shadow-md active:scale-95"
+              title={`Simpan seluruh perubahan posisi staf, gaji, dan biaya operasional departemen ini ke properti ${basicInput.name}`}
+            >
+              <Save className="w-4 h-4 mr-1.5 text-yellow-300" /> Simpan Perubahan {type.replace('_div', '').toUpperCase()}
+            </button>
+            <button 
               onClick={() => { setExportModalDeptFilter(keys); setExportModalOpen(true); }}
               className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center transition-all shadow-sm"
               title="Configure and download CSV for these departments"
@@ -1385,10 +1726,10 @@ export default function App() {
               className="bg-white hover:bg-slate-50 text-slate-700 px-3 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center transition-all border border-slate-200 shadow-sm"
               title="Quick download flat CSV for external ETL / script ingestion"
             >
-              <Download className="w-4 h-4 mr-1.5 text-blue-600" /> Quick CSV (ETL)
+              <Download className="w-4 h-4 mr-1.5 text-blue-600" /> Quick CSV
             </button>
             <button onClick={() => setActiveView('dashboard')} className="bg-slate-900 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center hover:bg-slate-800 transition-all shadow-md">
-              <LayoutDashboard className="w-4 h-4 mr-1.5" /> Return to Summary
+              <LayoutDashboard className="w-4 h-4 mr-1.5" /> Dashboard
             </button>
           </div>
         </div>
@@ -1405,6 +1746,7 @@ export default function App() {
             onUpdateExpenseItem={(idx: number, field: string, val: any) => updateExpenseItem(key, idx, field, val)}
             onAddExpenseItem={() => addExpenseItem(key)}
             onRemoveExpenseItem={(idx: number) => removeExpenseItem(key, idx)}
+            onSaveDept={() => handleSaveDepartment(key)}
           />
         ))}
       </div>
@@ -1765,6 +2107,36 @@ export default function App() {
         <h2 className="text-3xl font-bold text-slate-800">Setup Properti</h2>
         <p className="text-slate-500 mt-2">Isi data dasar untuk memulai kalkulasi otomatis.</p>
       </div>
+
+      {/* Multi-Property Management Banner in Quick Setup */}
+      <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <div className="flex items-center space-x-2">
+            <h3 className="font-bold text-slate-800 text-sm flex items-center">
+              <Building2 className="w-4 h-4 mr-1.5 text-blue-900" />
+              Properti Aktif & Multi-Property Manager
+            </h3>
+            <span className="text-[10px] bg-blue-100 text-blue-900 font-extrabold px-2 py-0.5 rounded-full">
+              {propertiesForCurrent.length} Properti
+            </span>
+          </div>
+          <p className="text-xs text-slate-500 mt-1">
+            Akun Login: <span className="font-semibold text-slate-700">{currentUser.email}</span> • Status: <span className="text-emerald-600 font-bold">{saveStatusText}</span>
+          </p>
+        </div>
+
+        <PropertySelector 
+          properties={propertiesForCurrent}
+          activeProperty={activeProperty}
+          currentUser={currentUser}
+          onSelectProperty={handleSelectProperty}
+          onAddProperty={handleAddProperty}
+          onDuplicateProperty={handleDuplicateProperty}
+          onDeleteProperty={handleDeleteProperty}
+          onManualSave={handleManualSave}
+        />
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
@@ -2161,6 +2533,54 @@ export default function App() {
                 </div>
              </div>
           </div>
+
+          {/* Alokasi CAPEX & Payback ROI Card in Quick Setup */}
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 mt-6">
+            <div className="flex justify-between items-center mb-3 border-b border-slate-100 pb-2">
+              <div>
+                <h3 className="font-bold text-slate-800 text-sm flex items-center">
+                  <Wrench className="w-4 h-4 mr-2 text-indigo-600" />
+                  Alokasi CAPEX & Payback ROI
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Sinkron otomatis ke Analisis ROI & Skenario
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveView('capex_roi')}
+                className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center hover:underline"
+              >
+                Detail <ArrowRight className="w-3 h-3 ml-1" />
+              </button>
+            </div>
+
+            <div className="space-y-2 mt-3">
+              {(basicInput.capex?.items || []).slice(0, 4).map((item: any, idx: number) => (
+                <div key={item.id} className="flex justify-between items-center text-xs p-2 bg-slate-50 rounded-lg">
+                  <span className="font-medium text-slate-700 truncate max-w-[130px]">{item.category}</span>
+                  <input 
+                    type="number"
+                    value={item.cost}
+                    onChange={(e) => {
+                      const newCost = parseFloat(e.target.value) || 0;
+                      const newItems = [...basicInput.capex.items];
+                      newItems[idx] = { ...newItems[idx], cost: newCost };
+                      handleUpdateCapex({ ...basicInput.capex, items: newItems });
+                    }}
+                    className="w-28 text-right font-mono font-bold text-xs bg-white border border-slate-200 rounded px-2 py-1 text-slate-900"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-3 pt-3 border-t border-slate-100 flex justify-between items-center bg-indigo-50/70 p-3 rounded-xl border border-indigo-100">
+              <span className="text-xs font-bold text-indigo-900">Total CAPEX:</span>
+              <span className="text-sm font-black font-mono text-indigo-950">
+                {formatIDR((basicInput.capex?.items || []).reduce((acc: number, it: any) => acc + (Number(it.cost) || 0), 0))}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
       <button onClick={handleGenerate} className="w-full mt-8 bg-blue-900 hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex items-center justify-center transition-all shadow-lg hover:shadow-xl text-lg">
@@ -2251,6 +2671,71 @@ export default function App() {
            <span className="font-bold text-slate-800">THELOKA PRO</span>
            <button onClick={() => setSidebarOpen(!isSidebarOpen)}><Menu className="text-slate-600" /></button>
         </header>
+
+        {/* Desktop Top Header Bar for Global Multi-Property & Account Access */}
+        <header className="hidden md:flex bg-white border-b border-slate-200 h-16 items-center justify-between px-6 shrink-0 print:hidden z-10">
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2">
+              <span className="font-extrabold text-slate-800 text-sm tracking-wide">
+                {basicInput.name}
+              </span>
+              <span className="text-[11px] font-mono bg-blue-50 text-blue-800 font-bold px-2 py-0.5 rounded-full border border-blue-100">
+                {basicInput.rooms} Kamar • {basicInput.location}
+              </span>
+              {basicInput.hasRestaurant ? (
+                <span className="text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md border border-emerald-100">
+                  + Restoran / F&B
+                </span>
+              ) : (
+                <span className="text-[10px] font-bold bg-amber-50 text-amber-800 px-2 py-0.5 rounded-md border border-amber-200">
+                  Room-Only
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-3">
+            <PropertySelector 
+              properties={propertiesForCurrent}
+              activeProperty={activeProperty}
+              currentUser={currentUser}
+              onSelectProperty={handleSelectProperty}
+              onAddProperty={handleAddProperty}
+              onDuplicateProperty={handleDuplicateProperty}
+              onDeleteProperty={handleDeleteProperty}
+              onManualSave={handleManualSave}
+            />
+
+            <div className="h-6 w-px bg-slate-200"></div>
+
+            <button
+              onClick={() => setIsGmailModalOpen(true)}
+              className="flex items-center space-x-2 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-blue-400 bg-white hover:bg-slate-50 transition-all text-xs font-medium text-slate-700"
+              title="Ganti akun Gmail atau login"
+            >
+              <div className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[10px] overflow-hidden">
+                {currentUser.avatar ? <img src={currentUser.avatar} alt="" className="w-full h-full object-cover" /> : currentUser.name[0]}
+              </div>
+              <span className="font-bold truncate max-w-[120px]">{currentUser.name}</span>
+              <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase ${
+                currentUser.role === 'super_admin' ? 'bg-amber-400 text-slate-950 font-extrabold' : 'bg-blue-100 text-blue-900'
+              }`}>
+                {currentUser.role === 'super_admin' ? 'Super Admin' : 'User'}
+              </span>
+            </button>
+
+            {currentUser.role === 'super_admin' && (
+              <button
+                onClick={() => setIsSuperAdminModalOpen(true)}
+                className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-black px-3 py-1.5 rounded-xl text-xs flex items-center transition-all shadow-sm"
+                title="Super Admin: Kelola semua properti & hapus pengguna"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 mr-1" />
+                Admin Panel
+              </button>
+            )}
+          </div>
+        </header>
         <main className="flex-1 overflow-y-auto p-6">
            {activeView === 'setup' && renderSetup()}
            {activeView === 'revenue' && renderRevenueView()}
@@ -2294,6 +2779,8 @@ export default function App() {
                onUpdateBasicInput={(field: string, val: any) => {
                  setBasicInput(prev => ({ ...prev, [field]: val }));
                }}
+               onSaveManning={handleSaveManning}
+               saveStatusText={saveStatusText}
              />
            )}
            {activeView === 'tax_service' && (
@@ -2307,6 +2794,8 @@ export default function App() {
                basicInput={basicInput} 
                projectedData={getCurrentProjectedData()} 
                longTermData={longTermData || ThelokaBrain.generateLongTerm(getCurrentProjectedData(), growthParams)} 
+               onUpdateCapex={handleUpdateCapex}
+               onSaveCapex={handleSaveCapex}
              />
            )}
            {activeView === 'budgeting' && (
@@ -2327,6 +2816,45 @@ export default function App() {
         basicInput={basicInput}
         initialDeptFilter={exportModalDeptFilter}
       />
+
+      <GmailAuthModal
+        isOpen={isGmailModalOpen}
+        onClose={() => setIsGmailModalOpen(false)}
+        currentUser={currentUser}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+        onSwitchUser={handleSwitchUser}
+      />
+
+      <SuperAdminModal
+        isOpen={isSuperAdminModalOpen}
+        onClose={() => setIsSuperAdminModalOpen(false)}
+        currentUser={currentUser}
+        onImpersonateUser={handleSwitchUser}
+        onPropertySelect={(propId) => {
+          handleSelectProperty(propId);
+          setIsSuperAdminModalOpen(false);
+        }}
+      />
+
+      {/* Floating Toast Feedback for Explicit Save Actions */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-slate-700 flex items-center space-x-3 animate-fade-in max-w-md">
+          <div className="w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold shrink-0">
+            <Check className="w-4 h-4" />
+          </div>
+          <div className="flex-1">
+            <div className="font-bold text-xs text-emerald-400 uppercase tracking-wider">Perubahan Berhasil Disimpan</div>
+            <div className="text-xs text-slate-200 mt-0.5 leading-relaxed">{toastMessage}</div>
+          </div>
+          <button 
+            onClick={() => setToastMessage(null)} 
+            className="text-slate-400 hover:text-white p-1 hover:bg-slate-800 rounded-lg transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

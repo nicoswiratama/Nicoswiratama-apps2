@@ -10,8 +10,12 @@ import {
   Coins, 
   Building2,
   Sliders,
-  RotateCcw
+  RotateCcw,
+  Wrench,
+  Clock,
+  Landmark
 } from 'lucide-react';
+import { DEFAULT_CAPEX } from '../services/propertyStorage';
 
 interface ScenarioComparisonProps {
   basicInput: any;
@@ -54,6 +58,18 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
     }
   });
 
+  const rooms = basicInput.rooms || 40;
+  const capex = basicInput.capex || DEFAULT_CAPEX;
+  const totalCapex = (capex.roomRenovationPerRoom * rooms) + 
+    capex.publicAreaRenovation + 
+    capex.mepEquipment + 
+    capex.itPmsHardware + 
+    capex.workingCapital;
+
+  const fixedChargesList = basicInput.fixedCharges || [];
+  const activeFixedCharges = fixedChargesList.filter((fc: any) => fc.active);
+  const totalFixedChargesAnnual = activeFixedCharges.reduce((acc: number, fc: any) => acc + ((Number(fc.monthlyAmount) || 0) * 12), 0);
+
   const baseRevenue = projectedData?.revenue?.total || 0;
   const baseRoomRevenue = projectedData?.revenue?.room || 0;
   const baseFbRevenue = projectedData?.revenue?.fb || 0;
@@ -68,9 +84,23 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
     ? baseRevenue * (basicInput.customFee.revPct / 100) 
     : (baseRevenue * (basicInput.customFee.baseRevPct / 100)) + (Math.max(0, baseGop) * (basicInput.customFee.gopPct / 100));
   const baseNop = baseGop - baseFee;
+  const baseNetCashflow = baseNop - totalFixedChargesAnnual;
+
+  // Helper to calculate estimated payback years given annual owner cash flow
+  const calcPaybackStr = (annualCash: number) => {
+    if (annualCash <= 0 || totalCapex <= 0) return '> 10 Tahun';
+    const yearsFrac = totalCapex / annualCash;
+    if (yearsFrac > 10) return '> 10 Tahun';
+    const whole = Math.floor(yearsFrac);
+    const months = Math.round((yearsFrac - whole) * 12);
+    return `${whole} Thn ${months > 0 ? `${months} Bln` : ''}`;
+  };
 
   const scenarios = useMemo(() => {
     // 1. Realistic / Base
+    const rPayback = calcPaybackStr(baseNetCashflow);
+    const rRoi = totalCapex > 0 ? (baseNetCashflow / totalCapex) * 100 : 0;
+
     const realistic = {
       id: 'realistic',
       name: 'Realistis (Baseline Aktif)',
@@ -89,7 +119,11 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
       gopMargin: baseRevenue > 0 ? (baseGop / baseRevenue) : 0,
       fee: baseFee,
       nop: baseNop,
-      nopMargin: baseRevenue > 0 ? (baseNop / baseRevenue) : 0
+      nopMargin: baseRevenue > 0 ? (baseNop / baseRevenue) : 0,
+      fixedCharges: totalFixedChargesAnnual,
+      netCashflow: baseNetCashflow,
+      payback: rPayback,
+      roi: rRoi,
     };
 
     // 2. Conservative
@@ -106,6 +140,9 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
       ? cTotalRev * (basicInput.customFee.revPct / 100) 
       : (cTotalRev * (basicInput.customFee.baseRevPct / 100)) + (Math.max(0, cGop) * (basicInput.customFee.gopPct / 100));
     const cNop = cGop - cFee;
+    const cNetCashflow = cNop - totalFixedChargesAnnual;
+    const cPayback = calcPaybackStr(cNetCashflow);
+    const cRoi = totalCapex > 0 ? (cNetCashflow / totalCapex) * 100 : 0;
 
     const conservative = {
       id: 'conservative',
@@ -125,7 +162,11 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
       gopMargin: cTotalRev > 0 ? (cGop / cTotalRev) : 0,
       fee: cFee,
       nop: cNop,
-      nopMargin: cTotalRev > 0 ? (cNop / cTotalRev) : 0
+      nopMargin: cTotalRev > 0 ? (cNop / cTotalRev) : 0,
+      fixedCharges: totalFixedChargesAnnual,
+      netCashflow: cNetCashflow,
+      payback: cPayback,
+      roi: cRoi,
     };
 
     // 3. Aggressive
@@ -142,6 +183,9 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
       ? aTotalRev * (basicInput.customFee.revPct / 100) 
       : (aTotalRev * (basicInput.customFee.baseRevPct / 100)) + (Math.max(0, aGop) * (basicInput.customFee.gopPct / 100));
     const aNop = aGop - aFee;
+    const aNetCashflow = aNop - totalFixedChargesAnnual;
+    const aPayback = calcPaybackStr(aNetCashflow);
+    const aRoi = totalCapex > 0 ? (aNetCashflow / totalCapex) * 100 : 0;
 
     const aggressive = {
       id: 'aggressive',
@@ -161,21 +205,25 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
       gopMargin: aTotalRev > 0 ? (aGop / aTotalRev) : 0,
       fee: aFee,
       nop: aNop,
-      nopMargin: aTotalRev > 0 ? (aNop / aTotalRev) : 0
+      nopMargin: aTotalRev > 0 ? (aNop / aTotalRev) : 0,
+      fixedCharges: totalFixedChargesAnnual,
+      netCashflow: aNetCashflow,
+      payback: aPayback,
+      roi: aRoi,
     };
 
     return [conservative, realistic, aggressive];
-  }, [basicInput, projectedData, params, baseRevenue, baseRoomRevenue, baseFbRevenue, baseOtherRevenue, basePayroll, baseExpenses, baseTotalCost, baseGop, baseFee, baseNop]);
+  }, [basicInput, baseRevenue, baseRoomRevenue, baseFbRevenue, baseOtherRevenue, basePayroll, baseExpenses, params, totalCapex, totalFixedChargesAnnual]);
 
   const handleApply = (sc: any) => {
-    if (sc.id === 'realistic') return;
-    const confirm = window.confirm(`Terapkan skenario "${sc.name}" (Okupansi: ${sc.occ}%, ADR: ${formatIDR(sc.adr)}) sebagai konfigurasi aktif saat ini?`);
-    if (!confirm) return;
+    // Generate modified monthly targets based on the chosen scenario ADR and Occ ratio
+    const occRatio = sc.occ / basicInput.targetOcc;
+    const adrRatio = sc.adr / basicInput.adr;
 
     const newTargets = monthlyTargets.map((m) => ({
       ...m,
-      occ: parseFloat(Math.min(99, Math.max(5, sc.occ * (m.occ / (basicInput.targetOcc || 1)))).toFixed(1)),
-      arr: sc.adr
+      occ: parseFloat(Math.min(99, Math.max(10, m.occ * occRatio)).toFixed(1)),
+      arr: Math.round(m.arr * adrRatio)
     }));
 
     onApplyScenario({
@@ -198,9 +246,14 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
               Multi-Scenario Manager (3-Way Comparison)
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Simulasi perbandingan berdampingan: Konservatif, Realistis, dan Optimis untuk presentasi Owner & Investor.
+              Simulasi perbandingan berdampingan: Konservatif, Realistis, dan Optimis tersinkron dengan CAPEX & Estimasi Payback ROI.
             </p>
           </div>
+        </div>
+
+        <div className="text-xs font-bold bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-slate-700 shadow-sm flex items-center">
+          <Wrench className="w-3.5 h-3.5 mr-1.5 text-rose-600" />
+          Total CAPEX Properti: <span className="text-rose-700 font-extrabold ml-1">{formatIDR(totalCapex)}</span>
         </div>
       </div>
 
@@ -248,22 +301,9 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
                 {/* Key Numbers */}
                 <div className="p-5 space-y-4">
                   <div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                      Total Annual Revenue
-                    </div>
-                    <div className="text-xl font-black text-slate-800 mt-0.5">
+                    <div className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Topline Revenue Tahunan</div>
+                    <div className="text-xl font-black text-slate-900 font-mono mt-0.5">
                       {formatIDR(sc.revenue)}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-xs">
-                    <div>
-                      <span className="text-slate-400 block text-[10px] uppercase">Total Cost</span>
-                      <span className="font-bold text-rose-600 font-mono">{formatIDR(sc.totalCost)}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 block text-[10px] uppercase">GOP Margin</span>
-                      <span className="font-bold text-emerald-700 font-mono">{formatPercent(sc.gopMargin)}</span>
                     </div>
                   </div>
 
@@ -278,8 +318,30 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
                       {formatIDR(sc.gop)}
                     </div>
                     <div className="mt-2 text-xs flex justify-between text-slate-600 pt-2 border-t border-slate-200/60">
-                      <span>Owner NOP:</span>
-                      <span className="font-bold">{formatIDR(sc.nop)}</span>
+                      <span>Margin GOP:</span>
+                      <span className="font-bold">{formatPercent(sc.gopMargin)}</span>
+                    </div>
+                  </div>
+
+                  {/* CAPEX Payback & Net Cashflow Badge */}
+                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 text-xs">
+                    <div className="flex justify-between items-center text-slate-600">
+                      <span className="flex items-center">
+                        <Landmark className="w-3 h-3 mr-1 text-slate-400" />
+                        Net Kas Pemilik:
+                      </span>
+                      <span className="font-mono font-bold text-slate-800">{formatIDR(sc.netCashflow)}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-700 pt-1 border-t border-slate-200">
+                      <span className="flex items-center font-semibold">
+                        <Clock className="w-3 h-3 mr-1 text-blue-600" />
+                        Balik Modal CAPEX:
+                      </span>
+                      <span className="font-bold text-emerald-700">{sc.payback}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-600">
+                      <span>Estimasi ROI:</span>
+                      <span className="font-mono font-bold text-blue-900">{formatPercent(sc.roi / 100)} / thn</span>
                     </div>
                   </div>
                 </div>
@@ -310,9 +372,9 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
         <div className="p-6 border-b border-slate-100 flex justify-between items-center">
           <h3 className="font-bold text-slate-800 text-base flex items-center">
             <Layers className="w-4 h-4 mr-2 text-indigo-600" />
-            Tabel Komparasi Rinci Antar Skenario
+            Tabel Komparasi Rinci Antar Skenario & Kelayakan Investasi (CAPEX)
           </h3>
-          <span className="text-xs text-slate-400">IDR Currency</span>
+          <span className="text-xs text-slate-400">Standar USALI Perhotelan</span>
         </div>
 
         <div className="overflow-x-auto">
@@ -325,7 +387,7 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
                 <th className="py-3 px-4 text-emerald-700">Optimis / Agresif</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-slate-700">
+            <tbody className="divide-y divide-slate-100 text-slate-700 text-xs">
               <tr>
                 <td className="py-2.5 px-4 text-left font-medium">Average Occupancy</td>
                 <td className="py-2.5 px-4 font-mono font-bold text-amber-800">{scenarios[0].occ}%</td>
@@ -380,11 +442,38 @@ export const ScenarioComparison: React.FC<ScenarioComparisonProps> = ({
                 <td className="py-2.5 px-4 font-mono text-xs text-indigo-700 bg-blue-50/30 font-bold">{formatIDR(scenarios[1].fee)}</td>
                 <td className="py-2.5 px-4 font-mono text-xs text-indigo-700">{formatIDR(scenarios[2].fee)}</td>
               </tr>
+              <tr>
+                <td className="py-2.5 px-4 text-left font-semibold">Net Operating Profit (NOP)</td>
+                <td className="py-2.5 px-4 font-mono font-bold text-slate-800">{formatIDR(scenarios[0].nop)}</td>
+                <td className="py-2.5 px-4 font-mono font-bold text-slate-800 bg-blue-50/30">{formatIDR(scenarios[1].nop)}</td>
+                <td className="py-2.5 px-4 font-mono font-bold text-slate-800">{formatIDR(scenarios[2].nop)}</td>
+              </tr>
+              <tr>
+                <td className="py-2.5 px-4 text-left font-medium text-rose-700">Beban Tetap Non-Operasional (Sewa/Bank)</td>
+                <td className="py-2.5 px-4 font-mono text-rose-600">({formatIDR(scenarios[0].fixedCharges)})</td>
+                <td className="py-2.5 px-4 font-mono text-rose-600 bg-blue-50/30">({formatIDR(scenarios[1].fixedCharges)})</td>
+                <td className="py-2.5 px-4 font-mono text-rose-600">({formatIDR(scenarios[2].fixedCharges)})</td>
+              </tr>
               <tr className="bg-slate-900 text-white font-black">
-                <td className="py-3 px-4 text-left">Net Operating Profit (Owner Profit)</td>
-                <td className="py-3 px-4 font-mono text-yellow-300">{formatIDR(scenarios[0].nop)}</td>
-                <td className="py-3 px-4 font-mono text-yellow-400 bg-slate-800 text-base">{formatIDR(scenarios[1].nop)}</td>
-                <td className="py-3 px-4 font-mono text-yellow-300">{formatIDR(scenarios[2].nop)}</td>
+                <td className="py-3 px-4 text-left">Net Cash Flow to Owner (EBITDA)</td>
+                <td className="py-3 px-4 font-mono text-emerald-300">{formatIDR(scenarios[0].netCashflow)}</td>
+                <td className="py-3 px-4 font-mono text-emerald-400 bg-slate-800 text-base">{formatIDR(scenarios[1].netCashflow)}</td>
+                <td className="py-3 px-4 font-mono text-emerald-300">{formatIDR(scenarios[2].netCashflow)}</td>
+              </tr>
+              <tr className="bg-emerald-50/60 font-bold text-emerald-950">
+                <td className="py-3 px-4 text-left flex items-center">
+                  <Clock className="w-3.5 h-3.5 mr-1.5 text-emerald-700" />
+                  Estimasi Payback Periode CAPEX ({formatIDR(totalCapex)})
+                </td>
+                <td className="py-3 px-4 font-mono font-bold text-amber-800">{scenarios[0].payback}</td>
+                <td className="py-3 px-4 font-mono font-black text-blue-900 bg-blue-100/50">{scenarios[1].payback}</td>
+                <td className="py-3 px-4 font-mono font-black text-emerald-800">{scenarios[2].payback}</td>
+              </tr>
+              <tr className="bg-emerald-50/30 font-bold text-slate-800">
+                <td className="py-2.5 px-4 text-left">Estimasi ROI CAPEX Tahunan</td>
+                <td className="py-2.5 px-4 font-mono text-amber-800">{formatPercent(scenarios[0].roi / 100)}</td>
+                <td className="py-2.5 px-4 font-mono text-blue-900 bg-blue-50/50">{formatPercent(scenarios[1].roi / 100)}</td>
+                <td className="py-2.5 px-4 font-mono text-emerald-800">{formatPercent(scenarios[2].roi / 100)}</td>
               </tr>
             </tbody>
           </table>

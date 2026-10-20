@@ -21,7 +21,8 @@ import {
   Edit3,
   Check,
   TrendingUp,
-  MapPin
+  MapPin,
+  Save
 } from 'lucide-react';
 import { DEPARTMENT_LABELS } from '../services/exportCsv';
 import { REGIONAL_UMK_DB } from '../App';
@@ -34,6 +35,8 @@ interface ManningBenchmarkProps {
   onAddRole?: (dept: string) => void;
   onRemoveRole?: (dept: string, idx: number) => void;
   onUpdateBasicInput?: (field: string, val: any) => void;
+  onSaveManning?: (customKpi?: any) => void;
+  saveStatusText?: string;
 }
 
 const formatIDR = (amount: number) => {
@@ -55,14 +58,20 @@ export const ManningBenchmark: React.FC<ManningBenchmarkProps> = ({
   onUpdateRole,
   onAddRole,
   onRemoveRole,
-  onUpdateBasicInput
+  onUpdateBasicInput,
+  onSaveManning,
+  saveStatusText
 }) => {
-  const [selectedBenchmarkType, setSelectedBenchmarkType] = useState<string>(
-    basicInput?.type === 'Resort' ? 'resort' : 'midscale'
-  );
+  const savedKpi = basicInput?.customManningKpi;
+  const [selectedBenchmarkType, setSelectedBenchmarkType] = useState<string>(() => {
+    if (savedKpi?.benchmarkType) return savedKpi.benchmarkType;
+    if (basicInput?.hasRestaurant === false) return 'budget';
+    return basicInput?.type === 'Resort' ? 'resort' : 'midscale';
+  });
 
   const [expandedDept, setExpandedDept] = useState<string | null>('all');
   const [isEditingPositions, setIsEditingPositions] = useState<boolean>(true);
+  const [isSavedRecently, setIsSavedRecently] = useState<boolean>(false);
 
   // Standard Indonesian & International Hospitality Manning Standards
   const benchmarkStandards: Record<string, { name: string; min: number; max: number; hkLoad: number; maxPayrollPct: number; desc: string }> = {
@@ -108,10 +117,6 @@ export const ManningBenchmark: React.FC<ManningBenchmarkProps> = ({
   const umkAreaInfo = REGIONAL_UMK_DB[currentUmkArea] || { label: basicInput?.location || 'Area Properti', umk: currentUmk, province: 'Indonesia' };
 
   // --- DYNAMIC & SENSIBLE KPI CALIBRATION ---
-  // In Indonesia, labor cost percentage depends heavily on regional wage (UMK) vs ADR:
-  // When UMK is high (e.g. Jakarta Rp 5M) and ADR is moderate, payroll % is naturally higher.
-  // When UMK is low (e.g. Jogja Rp 2.3M), payroll % is lower.
-  // We calibrate the baseline target dynamically so it stays realistic and sensible ("masuk akal")!
   const baseAdr = Math.max(100000, Number(basicInput?.adr) || 1500000);
   const wageToAdrRatio = currentUmk / baseAdr; // Standard is around 2.0 - 2.6
   const laborPressureIndex = wageToAdrRatio / 2.2; 
@@ -120,12 +125,27 @@ export const ManningBenchmark: React.FC<ManningBenchmarkProps> = ({
     Math.min(38, Math.max(18, standard.maxPayrollPct * Math.min(1.3, Math.max(0.85, 0.75 + 0.25 * laborPressureIndex))))
   );
 
-  // Editable custom target overrides
-  const [isCustomMode, setIsCustomMode] = useState<boolean>(false);
-  const [customMinRatio, setCustomMinRatio] = useState<number>(standard.min);
-  const [customMaxRatio, setCustomMaxRatio] = useState<number>(standard.max);
-  const [customHkLoad, setCustomHkLoad] = useState<number>(standard.hkLoad);
-  const [customMaxPayrollPct, setCustomMaxPayrollPct] = useState<number>(sensibleAdaptivePayrollPct);
+  // Editable custom target overrides with persistence
+  const [isCustomMode, setIsCustomMode] = useState<boolean>(() => savedKpi?.isCustomMode ?? false);
+  const [customMinRatio, setCustomMinRatio] = useState<number>(() => savedKpi?.minRatio ?? standard.min);
+  const [customMaxRatio, setCustomMaxRatio] = useState<number>(() => savedKpi?.maxRatio ?? standard.max);
+  const [customHkLoad, setCustomHkLoad] = useState<number>(() => savedKpi?.hkLoad ?? standard.hkLoad);
+  const [customMaxPayrollPct, setCustomMaxPayrollPct] = useState<number>(() => savedKpi?.maxPayrollPct ?? sensibleAdaptivePayrollPct);
+
+  const handleTriggerSave = () => {
+    if (onSaveManning) {
+      onSaveManning({
+        isCustomMode,
+        minRatio: isCustomMode ? customMinRatio : standard.min,
+        maxRatio: isCustomMode ? customMaxRatio : standard.max,
+        hkLoad: isCustomMode ? customHkLoad : standard.hkLoad,
+        maxPayrollPct: isCustomMode ? customMaxPayrollPct : sensibleAdaptivePayrollPct,
+        benchmarkType: selectedBenchmarkType
+      });
+      setIsSavedRecently(true);
+      setTimeout(() => setIsSavedRecently(false), 2500);
+    }
+  };
 
   // Sync defaults when standard or UMK changes
   React.useEffect(() => {
@@ -315,13 +335,37 @@ export const ManningBenchmark: React.FC<ManningBenchmarkProps> = ({
             onClick={() => setIsCustomMode(!isCustomMode)}
             className={`text-xs font-bold px-3 py-2 rounded-xl border flex items-center transition-all ${
               isCustomMode 
-                ? 'bg-blue-600 text-white border-blue-600 shadow' 
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow' 
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
             <Sliders className="w-3.5 h-3.5 mr-1.5" />
             {isCustomMode ? 'Target KPI Custom' : 'Edit Target KPI'}
           </button>
+
+          {onSaveManning && (
+            <button
+              onClick={handleTriggerSave}
+              className={`text-xs font-bold px-3.5 py-2 rounded-xl flex items-center transition-all shadow-sm active:scale-95 ${
+                isSavedRecently 
+                  ? 'bg-emerald-600 text-white' 
+                  : 'bg-blue-600 hover:bg-blue-700 text-white'
+              }`}
+              title={`Simpan seluruh perubahan posisi staf, gaji, dan standar KPI ke properti ${basicInput?.name || ''}`}
+            >
+              {isSavedRecently ? (
+                <>
+                  <Check className="w-3.5 h-3.5 mr-1.5" />
+                  Tersimpan di Properti!
+                </>
+              ) : (
+                <>
+                  <Save className="w-3.5 h-3.5 mr-1.5 text-yellow-300" />
+                  Simpan Manning & KPI
+                </>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
@@ -572,6 +616,29 @@ export const ManningBenchmark: React.FC<ManningBenchmarkProps> = ({
           </div>
 
           <div className="flex items-center space-x-2">
+            {onSaveManning && (
+              <button
+                onClick={handleTriggerSave}
+                className={`text-xs font-bold px-3.5 py-1.5 rounded-xl flex items-center transition-all shadow-sm active:scale-95 ${
+                  isSavedRecently 
+                    ? 'bg-emerald-600 text-white' 
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                }`}
+                title={`Simpan perubahan tabel staf & gaji ke properti ${basicInput?.name || ''}`}
+              >
+                {isSavedRecently ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 mr-1.5" />
+                    Tersimpan!
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5 mr-1.5 text-white" />
+                    Simpan Perubahan Manning
+                  </>
+                )}
+              </button>
+            )}
             <button
               onClick={() => setExpandedDept(expandedDept === 'all' ? null : 'all')}
               className="text-xs font-bold text-slate-600 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-xl transition-all"
@@ -597,9 +664,16 @@ export const ManningBenchmark: React.FC<ManningBenchmarkProps> = ({
                     <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">
                       {dept.name}
                     </span>
-                    <span className="text-xs font-mono font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-md">
+                    <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded-md ${
+                      dept.pax === 0 ? 'bg-slate-100 text-slate-500' : 'bg-blue-100 text-blue-800'
+                    }`}>
                       {dept.pax} Pax ({pctOfTotal.toFixed(0)}%)
                     </span>
+                    {dept.code === 'fb' && !basicInput?.hasRestaurant && (
+                      <span className="text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-md">
+                        Outlet F&B Dinonaktifkan (Room-Only)
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center space-x-4">
