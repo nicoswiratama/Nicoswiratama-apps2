@@ -1,3 +1,5 @@
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { RevenueScenarios, RevenueScenarioTarget } from '../types';
 
 const MONTH_NAMES = [
@@ -8,7 +10,7 @@ const MONTH_NAMES = [
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 const formatIDR = (amount: number) => {
-  if (isNaN(amount)) return "Rp 0";
+  if (isNaN(amount) || amount === null || amount === undefined) return "Rp 0";
   return new Intl.NumberFormat('id-ID', {
     style: 'currency',
     currency: 'IDR',
@@ -17,7 +19,10 @@ const formatIDR = (amount: number) => {
   }).format(amount);
 };
 
-const formatPercent = (val: number) => `${(val * 100).toFixed(1)}%`;
+const formatPercent = (val: number) => {
+  if (isNaN(val) || val === null || val === undefined) return "0.0%";
+  return `${(val * 100).toFixed(1)}%`;
+};
 
 export interface RevenuePdfReportData {
   basicInput: any;
@@ -94,15 +99,17 @@ export const generateAndPrintRevenuePdf = ({
   basicInput,
   revenueScenarios,
   dateStr
-}: RevenuePdfReportData) => {
-  if (!revenueScenarios) return;
+}: RevenuePdfReportData): string => {
+  if (!revenueScenarios) {
+    throw new Error("Data skenario revenue tidak tersedia.");
+  }
 
-  const rooms = basicInput.rooms || 40;
+  const rooms = Number(basicInput?.rooms) || 40;
   const activeKey = revenueScenarios.activeScenario || 'realistic';
 
-  const resRealistic = calculateScenarioMetrics(rooms, revenueScenarios.realistic);
-  const resConservative = calculateScenarioMetrics(rooms, revenueScenarios.conservative);
-  const resOptimistic = calculateScenarioMetrics(rooms, revenueScenarios.optimistic);
+  const resRealistic = calculateScenarioMetrics(rooms, revenueScenarios.realistic || []);
+  const resConservative = calculateScenarioMetrics(rooms, revenueScenarios.conservative || []);
+  const resOptimistic = calculateScenarioMetrics(rooms, revenueScenarios.optimistic || []);
 
   const activeRes = activeKey === 'conservative' 
     ? resConservative 
@@ -122,427 +129,318 @@ export const generateAndPrintRevenuePdf = ({
     year: 'numeric',
   });
 
-  const iframe = document.createElement('iframe');
-  iframe.style.position = 'fixed';
-  iframe.style.right = '0';
-  iframe.style.bottom = '0';
-  iframe.style.width = '0';
-  iframe.style.height = '0';
-  iframe.style.border = '0';
-  document.body.appendChild(iframe);
+  // Initialize jsPDF A4 Landscape (297 x 210 mm)
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: 'a4',
+  });
 
-  const html = `
-<!DOCTYPE html>
-<html lang="id">
-<head>
-  <meta charset="UTF-8">
-  <title>Laporan Revenue Management 3-Way - ${basicInput.name}</title>
-  <style>
-    @page {
-      size: A4 landscape;
-      margin: 8mm 10mm;
-    }
-    * {
-      box-sizing: border-box;
-      -webkit-print-color-adjust: exact !important;
-      print-color-adjust: exact !important;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      color: #0f172a;
-      background: #ffffff;
-      margin: 0;
-      padding: 0;
-      font-size: 10.5px;
-      line-height: 1.35;
-    }
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      border-bottom: 2px solid #0f172a;
-      padding-bottom: 8px;
-      margin-bottom: 12px;
-    }
-    .brand-title {
-      font-size: 17px;
-      font-weight: 800;
-      letter-spacing: -0.02em;
-      color: #0f172a;
-      margin: 0;
-    }
-    .brand-subtitle {
-      font-size: 10px;
-      font-weight: 700;
-      color: #475569;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin-top: 2px;
-    }
-    .doc-badge {
-      display: inline-block;
-      background: #e0e7ff;
-      color: #3730a3;
-      font-size: 9px;
-      font-weight: 800;
-      padding: 2px 7px;
-      border-radius: 4px;
-      text-transform: uppercase;
-      margin-top: 3px;
-    }
-    .meta-table {
-      font-size: 9.5px;
-      text-align: right;
-    }
-    .meta-table td {
-      padding: 1px 4px;
-    }
-    .meta-label {
-      color: #64748b;
-      font-weight: 500;
-    }
-    .meta-val {
-      font-weight: 700;
-      color: #0f172a;
-    }
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginX = 12;
 
-    /* Comparison Section */
-    .section-title {
-      font-size: 11px;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #1e293b;
-      margin: 10px 0 6px 0;
-      display: flex;
-      align-items: center;
-      gap: 6px;
+  // 1. BRAND HEADER BAR (Landscape)
+  doc.setFillColor(15, 23, 42); // slate-900
+  doc.rect(0, 0, pageWidth, 24, 'F');
+
+  // Blue Accent Stripe
+  doc.setFillColor(37, 99, 235); // blue-600
+  doc.rect(0, 23, pageWidth, 1.2, 'F');
+
+  // Brand Name
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text('THELOKA PRO', marginX, 10);
+
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(148, 163, 184); // slate-400
+  doc.text('STRATEGIC REVENUE MANAGEMENT & MULTI-SCENARIO (3-WAY) PROJECTION', marginX, 15);
+
+  // Document Title on Right
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(255, 255, 255);
+  doc.text('LAPORAN EKSEKUTIF REVENUE MANAGEMENT (3-WAY)', pageWidth - marginX, 10, { align: 'right' });
+
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(147, 197, 253);
+  doc.text(`SKENARIO AKTIF: ${scenarioTitles[activeKey].toUpperCase()} • DICETAK: ${printDate}`, pageWidth - marginX, 15, { align: 'right' });
+
+  let currentY = 28;
+
+  // 2. PROPERTY BANNER
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(marginX, currentY, pageWidth - (marginX * 2), 11, 1.5, 1.5, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(15, 23, 42);
+  doc.text(basicInput?.name || 'Properti Hotel', marginX + 3.5, currentY + 4.5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(71, 85, 105);
+  doc.text(`${basicInput?.location || '-'} ${basicInput?.address ? '• ' + basicInput.address : ''} • ${rooms} Kamar (${rooms * 365} Kamar-Malam / Thn)`, marginX + 3.5, currentY + 8.5);
+
+  // Right side of banner
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(30, 58, 138);
+  doc.text(`Target Quick Setup: ${formatPercent((basicInput?.targetOcc || 0) / 100)} Okupansi • ADR: ${formatIDR(basicInput?.adr || 0)}`, pageWidth - marginX - 3.5, currentY + 4.5, { align: 'right' });
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(100, 116, 139);
+  doc.text('Sinkronisasi Proyeksi 2-Arah Terintegrasi ke USALI P&L Konsolidasi', pageWidth - marginX - 3.5, currentY + 8.5, { align: 'right' });
+
+  currentY += 14;
+
+  // 3. 3-WAY SCENARIO COMPARISON CARDS
+  const cardWidth = (pageWidth - (marginX * 2) - 8) / 3;
+  const cardHeight = 27;
+
+  const scenariosMeta = [
+    {
+      key: 'conservative',
+      name: '1. Skenario Konservatif (Bear Case)',
+      res: resConservative,
+      badgeText: activeKey === 'conservative' ? '★ SKENARIO AKTIF' : 'ALTERNATIF (BEAR)',
+      devText: formatPercent((resConservative.totalRoomRevenue - resRealistic.totalRoomRevenue) / Math.max(1, resRealistic.totalRoomRevenue)),
+      devLabel: 'Deviasi vs Realistis:',
+      devColor: [185, 28, 28],
+      isActive: activeKey === 'conservative',
+    },
+    {
+      key: 'realistic',
+      name: '2. Skenario Realistis (Baseline Case)',
+      res: resRealistic,
+      badgeText: activeKey === 'realistic' ? '★ SKENARIO AKTIF' : 'BASELINE (BASE)',
+      devText: '100.0% (Acuan Proyeksi)',
+      devLabel: 'Baseline Index:',
+      devColor: [30, 58, 138],
+      isActive: activeKey === 'realistic',
+    },
+    {
+      key: 'optimistic',
+      name: '3. Skenario Optimis (Bull Case)',
+      res: resOptimistic,
+      badgeText: activeKey === 'optimistic' ? '★ SKENARIO AKTIF' : 'ALTERNATIF (BULL)',
+      devText: `+${formatPercent((resOptimistic.totalRoomRevenue - resRealistic.totalRoomRevenue) / Math.max(1, resRealistic.totalRoomRevenue))}`,
+      devLabel: 'Potensi Kenaikan:',
+      devColor: [21, 128, 61],
+      isActive: activeKey === 'optimistic',
     }
-    .comp-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      margin-bottom: 14px;
+  ];
+
+  scenariosMeta.forEach((sc, idx) => {
+    const cardX = marginX + (idx * (cardWidth + 4));
+
+    if (sc.isActive) {
+      doc.setFillColor(239, 246, 255); // blue-50
+      doc.setDrawColor(37, 99, 235); // blue-600
+    } else {
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
     }
-    .scenario-card {
-      border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 9px 12px;
-      background: #f8fafc;
-    }
-    .scenario-card.active {
-      border: 2px solid #1e40af;
-      background: #eff6ff;
-    }
-    .card-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
-    }
-    .card-title {
-      font-size: 11px;
-      font-weight: 800;
-      color: #0f172a;
-    }
-    .card-badge {
-      font-size: 8.5px;
-      font-weight: 800;
-      padding: 1px 6px;
-      border-radius: 4px;
-      text-transform: uppercase;
-    }
-    .badge-active {
-      background: #1e40af;
-      color: #ffffff;
-    }
-    .badge-alt {
-      background: #e2e8f0;
-      color: #475569;
-    }
-    .card-revenue {
-      font-size: 15px;
-      font-weight: 900;
-      color: #0f172a;
-      font-family: monospace;
-      margin: 4px 0 6px 0;
-    }
-    .card-stats {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      font-size: 9.5px;
-    }
-    .stat-label {
-      color: #64748b;
-    }
-    .stat-val {
-      font-weight: 700;
-      color: #1e293b;
-      font-family: monospace;
-      text-align: right;
+    doc.roundedRect(cardX, currentY, cardWidth, cardHeight, 1.5, 1.5, 'FD');
+
+    // Title & Badge
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(sc.name, cardX + 3, currentY + 4.5);
+
+    // Badge
+    doc.setFontSize(6);
+    if (sc.isActive) {
+      doc.setFillColor(30, 58, 138);
+      doc.setTextColor(255, 255, 255);
+      doc.roundedRect(cardX + cardWidth - 25, currentY + 1.8, 22, 3.8, 1, 1, 'F');
+      doc.text(sc.badgeText, cardX + cardWidth - 14, currentY + 4.3, { align: 'center' });
+    } else {
+      doc.setFillColor(226, 232, 240);
+      doc.setTextColor(71, 85, 105);
+      doc.roundedRect(cardX + cardWidth - 25, currentY + 1.8, 22, 3.8, 1, 1, 'F');
+      doc.text(sc.badgeText, cardX + cardWidth - 14, currentY + 4.3, { align: 'center' });
     }
 
-    /* Main Detailed Table */
-    table.data-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 9.5px;
-      margin-top: 4px;
-    }
-    table.data-table th, table.data-table td {
-      border: 1px solid #cbd5e1;
-      padding: 4px 6px;
-      text-align: right;
-    }
-    table.data-table th {
-      background: #f1f5f9;
-      color: #334155;
-      font-weight: 800;
-      text-transform: uppercase;
-      font-size: 8.5px;
-      letter-spacing: 0.03em;
-    }
-    table.data-table th.text-left, table.data-table td.text-left {
-      text-align: left;
-    }
-    table.data-table tr.total-row {
-      background: #0f172a;
-      color: #ffffff;
-      font-weight: 800;
-    }
-    table.data-table tr.total-row td {
-      border-color: #0f172a;
-      color: #ffffff;
-      font-family: monospace;
-    }
+    // Revenue
+    doc.setFont('courier', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(sc.isActive ? 30 : 15, sc.isActive ? 58 : 23, sc.isActive ? 138 : 42);
+    doc.text(formatIDR(sc.res.totalRoomRevenue), cardX + 3, currentY + 10.5);
 
-    /* Signatures */
-    .signatures {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 20px;
-      margin-top: 14px;
-      padding-top: 10px;
-      border-top: 1px solid #cbd5e1;
-      font-size: 9px;
-    }
-    .sig-box {
-      border: 1px dashed #cbd5e1;
-      border-radius: 6px;
-      padding: 8px 10px;
-      background: #fafafa;
-    }
-    .sig-space {
-      height: 38px;
-    }
+    // Grid of stats inside card
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(100, 116, 139);
 
-    .footer {
-      display: flex;
-      justify-content: space-between;
-      font-size: 8.5px;
-      color: #64748b;
-      margin-top: 10px;
-      padding-top: 4px;
-      border-top: 1px solid #e2e8f0;
-    }
-  </style>
-</head>
-<body>
-  <!-- Header -->
-  <div class="header">
-    <div>
-      <h1 class="brand-title">THELOKA PRO HOSPITALITY SYSTEM</h1>
-      <div class="brand-subtitle">Strategic Revenue Management & Multi-Scenario (3-Way) Performance</div>
-      <div class="doc-badge">Official Projection Model • Standar USALI Perhotelan</div>
-    </div>
-    <div>
-      <table class="meta-table">
-        <tr><td class="meta-label">Properti:</td><td class="meta-val">${basicInput.name}</td></tr>
-        <tr><td class="meta-label">Area / Tipe:</td><td class="meta-val">${basicInput.location || '-'} • ${basicInput.type || 'Hotel/Resort'}</td></tr>
-        <tr><td class="meta-label">Kapasitas:</td><td class="meta-val">${rooms} Kamar (${rooms * 365} Kamar/Tahun)</td></tr>
-        <tr><td class="meta-label">Tanggal Cetak:</td><td class="meta-val">${printDate}</td></tr>
-        <tr><td class="meta-label">Skenario Aktif:</td><td class="meta-val" style="color: #1e40af;">${scenarioTitles[activeKey]}</td></tr>
-      </table>
-    </div>
-  </div>
+    const leftColX = cardX + 3;
+    const rightColX = cardX + (cardWidth / 2) + 2;
 
-  <!-- 3-Way Scenario Summary Cards -->
-  <div class="section-title">
-    <span>1. Perbandingan Eksekutif 3 Skenario Revenue (3-Way Comparison)</span>
-  </div>
-  <div class="comp-grid">
-    <!-- Konservatif -->
-    <div class="scenario-card ${activeKey === 'conservative' ? 'active' : ''}">
-      <div class="card-head">
-        <span class="card-title">1. Skenario Konservatif (Bear Case)</span>
-        <span class="card-badge ${activeKey === 'conservative' ? 'badge-active' : 'badge-alt'}">
-          ${activeKey === 'conservative' ? '★ AKTIF DI PROYEKSI' : 'ALTERNATIF'}
-        </span>
-      </div>
-      <div class="card-revenue">${formatIDR(resConservative.totalRoomRevenue)}</div>
-      <div class="card-stats">
-        <span class="stat-label">Rata-rata Okupansi:</span>
-        <span class="stat-val">${formatPercent(resConservative.weightedOcc)}</span>
-        <span class="stat-label">Kamar Terjual (Thn):</span>
-        <span class="stat-val">${resConservative.totalSold.toLocaleString('id-ID')} Rms</span>
-        <span class="stat-label">Rata-rata ARR (Net):</span>
-        <span class="stat-val">${formatIDR(resConservative.weightedArr)}</span>
-        <span class="stat-label">RevPAR Tahunan:</span>
-        <span class="stat-val">${formatIDR(resConservative.weightedRevpar)}</span>
-        <span class="stat-label">Deviasi vs Realistis:</span>
-        <span class="stat-val" style="color: #b91c1c;">
-          ${formatPercent((resConservative.totalRoomRevenue - resRealistic.totalRoomRevenue) / Math.max(1, resRealistic.totalRoomRevenue))}
-        </span>
-      </div>
-    </div>
+    doc.text(`Rata-rata Okupansi:`, leftColX, currentY + 15);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${formatPercent(sc.res.weightedOcc)}`, leftColX + 26, currentY + 15);
 
-    <!-- Realistis -->
-    <div class="scenario-card ${activeKey === 'realistic' ? 'active' : ''}">
-      <div class="card-head">
-        <span class="card-title">2. Skenario Realistis (Baseline)</span>
-        <span class="card-badge ${activeKey === 'realistic' ? 'badge-active' : 'badge-alt'}">
-          ${activeKey === 'realistic' ? '★ AKTIF DI PROYEKSI' : 'BASELINE'}
-        </span>
-      </div>
-      <div class="card-revenue">${formatIDR(resRealistic.totalRoomRevenue)}</div>
-      <div class="card-stats">
-        <span class="stat-label">Rata-rata Okupansi:</span>
-        <span class="stat-val">${formatPercent(resRealistic.weightedOcc)}</span>
-        <span class="stat-label">Kamar Terjual (Thn):</span>
-        <span class="stat-val">${resRealistic.totalSold.toLocaleString('id-ID')} Rms</span>
-        <span class="stat-label">Rata-rata ARR (Net):</span>
-        <span class="stat-val">${formatIDR(resRealistic.weightedArr)}</span>
-        <span class="stat-label">RevPAR Tahunan:</span>
-        <span class="stat-val">${formatIDR(resRealistic.weightedRevpar)}</span>
-        <span class="stat-label">Baseline Index:</span>
-        <span class="stat-val" style="color: #1e40af;">100.0% (Acuan)</span>
-      </div>
-    </div>
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Kamar Terjual:`, rightColX, currentY + 15);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${sc.res.totalSold.toLocaleString('id-ID')} Rms`, rightColX + 22, currentY + 15);
 
-    <!-- Optimis -->
-    <div class="scenario-card ${activeKey === 'optimistic' ? 'active' : ''}">
-      <div class="card-head">
-        <span class="card-title">3. Skenario Optimis (Bull Case)</span>
-        <span class="card-badge ${activeKey === 'optimistic' ? 'badge-active' : 'badge-alt'}">
-          ${activeKey === 'optimistic' ? '★ AKTIF DI PROYEKSI' : 'ALTERNATIF'}
-        </span>
-      </div>
-      <div class="card-revenue">${formatIDR(resOptimistic.totalRoomRevenue)}</div>
-      <div class="card-stats">
-        <span class="stat-label">Rata-rata Okupansi:</span>
-        <span class="stat-val">${formatPercent(resOptimistic.weightedOcc)}</span>
-        <span class="stat-label">Kamar Terjual (Thn):</span>
-        <span class="stat-val">${resOptimistic.totalSold.toLocaleString('id-ID')} Rms</span>
-        <span class="stat-label">Rata-rata ARR (Net):</span>
-        <span class="stat-val">${formatIDR(resOptimistic.weightedArr)}</span>
-        <span class="stat-label">RevPAR Tahunan:</span>
-        <span class="stat-val">${formatIDR(resOptimistic.weightedRevpar)}</span>
-        <span class="stat-label">Potensi Kenaikan:</span>
-        <span class="stat-val" style="color: #15803d;">
-          +${formatPercent((resOptimistic.totalRoomRevenue - resRealistic.totalRoomRevenue) / Math.max(1, resRealistic.totalRoomRevenue))}
-        </span>
-      </div>
-    </div>
-  </div>
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Rata-rata ARR:`, leftColX, currentY + 19);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${formatIDR(sc.res.weightedArr)}`, leftColX + 26, currentY + 19);
 
-  <!-- Detailed 12-Month Table for Active Scenario -->
-  <div class="section-title">
-    <span>2. Rincian Target Bulanan 12-Bulan (Skenario: ${scenarioTitles[activeKey]})</span>
-  </div>
-  <table class="data-table">
-    <thead>
-      <tr>
-        <th class="text-left" style="width: 14%;">Bulan</th>
-        <th style="width: 10%;">Hari / Bln</th>
-        <th style="width: 14%;">Rooms Available</th>
-        <th style="width: 14%;">Rooms Sold</th>
-        <th style="width: 14%;">Occupancy (%)</th>
-        <th style="width: 16%;">ARR (Net IDR)</th>
-        <th style="width: 14%;">RevPAR</th>
-        <th style="width: 18%;">Room Revenue (IDR)</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${activeRes.monthlyDetails.map((m) => `
-        <tr>
-          <td class="text-left" style="font-weight: 700;">${m.month}</td>
-          <td>${m.days}</td>
-          <td>${m.roomsAvailable.toLocaleString('id-ID')}</td>
-          <td style="font-weight: 600;">${m.roomsSold.toLocaleString('id-ID')}</td>
-          <td style="font-weight: 700; color: #1e40af;">${m.occ.toFixed(1)}%</td>
-          <td style="font-family: monospace;">${formatIDR(m.arr)}</td>
-          <td style="font-family: monospace; color: #475569;">${formatIDR(m.revpar)}</td>
-          <td style="font-weight: 800; font-family: monospace; color: #0f172a;">${formatIDR(m.roomRev)}</td>
-        </tr>
-      `).join('')}
-      <tr class="total-row">
-        <td class="text-left">TOTAL / RATA-RATA</td>
-        <td>365</td>
-        <td>${activeRes.totalAvailable.toLocaleString('id-ID')}</td>
-        <td>${activeRes.totalSold.toLocaleString('id-ID')}</td>
-        <td>${formatPercent(activeRes.weightedOcc)}</td>
-        <td>${formatIDR(activeRes.weightedArr)}</td>
-        <td>${formatIDR(activeRes.weightedRevpar)}</td>
-        <td style="font-size: 11px; color: #facc15;">${formatIDR(activeRes.totalRoomRevenue)}</td>
-      </tr>
-    </tbody>
-  </table>
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(`RevPAR Tahunan:`, rightColX, currentY + 19);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${formatIDR(sc.res.weightedRevpar)}`, rightColX + 22, currentY + 19);
 
-  <!-- Signatures -->
-  <div class="signatures">
-    <div class="sig-box">
-      <div>Disiapkan Oleh:</div>
-      <div class="sig-space"></div>
-      <div style="font-weight: 800; color: #0f172a;">Revenue Manager / Yield Specialist</div>
-      <div style="font-size: 8px; color: #64748b;">Theloka Asset Management • ${printDate}</div>
-    </div>
-    <div class="sig-box">
-      <div>Ditinjau & Divalidasi:</div>
-      <div class="sig-space"></div>
-      <div style="font-weight: 800; color: #0f172a;">General Manager / Financial Controller</div>
-      <div style="font-size: 8px; color: #64748b;">Standar Anggaran Operasional • ${printDate}</div>
-    </div>
-    <div class="sig-box">
-      <div>Disetujui Oleh:</div>
-      <div class="sig-space"></div>
-      <div style="font-weight: 800; color: #0f172a;">Owner / Direksi Properti (${basicInput.name})</div>
-      <div style="font-size: 8px; color: #64748b;">Otorisasi Target Revenue Multi-Skenario</div>
-    </div>
-  </div>
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(sc.devLabel, leftColX, currentY + 23.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(sc.devColor[0], sc.devColor[1], sc.devColor[2]);
+    doc.text(sc.devText, leftColX + 26, currentY + 23.5);
+  });
 
-  <!-- Footer -->
-  <div class="footer">
-    <div>THELOKA PRO HOSPITALITY SYSTEM • Multi-Scenario Revenue Management & USALI Analytics</div>
-    <div>Dicetak pada: ${new Date().toLocaleString('id-ID')} • Laporan Resmi Eksekutif</div>
-  </div>
-</body>
-</html>
-  `;
+  currentY += cardHeight + 4;
 
-  const doc = iframe.contentWindow?.document || iframe.contentDocument;
-  if (doc) {
-    doc.open();
-    doc.write(html);
-    doc.close();
+  // 4. DETAILED 12-MONTH TABLE FOR ACTIVE SCENARIO
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(15, 23, 42);
+  doc.text(`RINCIAN TARGET 12-BULAN — SKENARIO ${scenarioTitles[activeKey].toUpperCase()}`, marginX, currentY + 2);
+  currentY += 4;
 
-    setTimeout(() => {
-      try {
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-      } catch (e) {
-        console.error("Print error, falling back to window.print():", e);
-        window.print();
+  const tableBody = activeRes.monthlyDetails.map((m) => [
+    m.month,
+    `${m.days} hr`,
+    m.roomsAvailable.toLocaleString('id-ID'),
+    m.roomsSold.toLocaleString('id-ID'),
+    `${m.occ.toFixed(1)}%`,
+    formatIDR(m.arr),
+    formatIDR(m.revpar),
+    formatIDR(m.roomRev)
+  ]);
+
+  tableBody.push([
+    { content: 'TOTAL / RATA-RATA TAHUNAN', styles: { fontStyle: 'bold' } } as any,
+    '365 hr',
+    activeRes.totalAvailable.toLocaleString('id-ID'),
+    activeRes.totalSold.toLocaleString('id-ID'),
+    { content: formatPercent(activeRes.weightedOcc), styles: { fontStyle: 'bold' } } as any,
+    { content: formatIDR(activeRes.weightedArr), styles: { fontStyle: 'bold' } } as any,
+    { content: formatIDR(activeRes.weightedRevpar), styles: { fontStyle: 'bold' } } as any,
+    { content: formatIDR(activeRes.totalRoomRevenue), styles: { fontStyle: 'bold', textColor: [250, 204, 21] } } as any
+  ]);
+
+  autoTable(doc, {
+    startY: currentY,
+    head: [['Bulan', 'Hari/Bln', 'Rooms Avail', 'Rooms Sold', 'Okupansi (%)', 'ARR (Net IDR)', 'RevPAR (IDR)', 'Total Room Revenue (IDR)']],
+    body: tableBody,
+    theme: 'grid',
+    styles: {
+      fontSize: 7.2,
+      cellPadding: 1.5,
+      lineColor: [226, 232, 240],
+      lineWidth: 0.1,
+    },
+    headStyles: {
+      fillColor: [15, 23, 42],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      fontSize: 7.5,
+      cellPadding: 1.8,
+    },
+    columnStyles: {
+      0: { cellWidth: 32, fontStyle: 'bold' },
+      1: { cellWidth: 20, halign: 'center' },
+      2: { cellWidth: 28, halign: 'right', font: 'courier' },
+      3: { cellWidth: 28, halign: 'right', font: 'courier' },
+      4: { cellWidth: 28, halign: 'right', font: 'courier' },
+      5: { cellWidth: 42, halign: 'right', font: 'courier' },
+      6: { cellWidth: 42, halign: 'right', font: 'courier' },
+      7: { cellWidth: 53, halign: 'right', font: 'courier', fontStyle: 'bold' },
+    },
+    didParseCell: (data) => {
+      if (data.row.index === tableBody.length - 1) {
+        data.cell.styles.fillColor = [15, 23, 42];
+        data.cell.styles.textColor = [255, 255, 255];
       }
-      setTimeout(() => {
-        try {
-          if (document.body.contains(iframe)) {
-            document.body.removeChild(iframe);
-          }
-        } catch (_) {}
-      }, 3000);
-    }, 400);
-  } else {
-    window.print();
+    },
+    margin: { left: marginX, right: marginX },
+  });
+
+  currentY = (doc as any).lastAutoTable.finalY + 6;
+
+  // 5. SIGNATURES & VERIFICATION (Landscape 3 Columns)
+  if (currentY > pageHeight - 35) {
+    doc.addPage();
+    currentY = 16;
   }
+
+  const sigWidth = (pageWidth - (marginX * 2) - 30) / 3;
+
+  const signatures = [
+    { title: 'Disiapkan Oleh:', role: 'Revenue Manager / Yield Specialist', org: 'Theloka Asset Management' },
+    { title: 'Divalidasi Oleh:', role: 'General Manager / Financial Controller', org: 'Standar Operasional Hotel' },
+    { title: 'Disetujui Oleh:', role: `Owner / Direksi (${basicInput?.name || 'Properti'})`, org: 'Otorisasi Target Tahunan' },
+  ];
+
+  signatures.forEach((sig, idx) => {
+    const sigX = marginX + (idx * (sigWidth + 15));
+    doc.setDrawColor(203, 213, 225);
+    doc.line(sigX, currentY + 14, sigX + sigWidth, currentY + 14);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(sig.title, sigX, currentY + 2.5);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(sig.role, sigX, currentY + 18);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`${sig.org} • ${printDate}`, sigX, currentY + 22);
+  });
+
+  // 6. FOOTER BAR ON ALL PAGES
+  const totalPages = doc.internal.pages.length - 1;
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(226, 232, 240);
+    doc.line(marginX, pageHeight - 7, pageWidth - marginX, pageHeight - 7);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(148, 163, 184);
+    doc.text('THELOKA PRO HOSPITALITY SYSTEM • Strategic Multi-Scenario Revenue Management & USALI Analytics', marginX, pageHeight - 3.8);
+    doc.text(`Halaman ${i} dari ${totalPages}`, pageWidth - marginX, pageHeight - 3.8, { align: 'right' });
+  }
+
+  // Save PDF file directly to client computer!
+  const cleanName = (basicInput?.name || 'Properti')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '_')
+    .replace(/_+/g, '_');
+  const fileName = `Theloka_Revenue_Management_3Way_${cleanName}.pdf`;
+  doc.save(fileName);
+
+  return fileName;
 };

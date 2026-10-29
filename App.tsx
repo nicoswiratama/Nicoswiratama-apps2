@@ -812,54 +812,149 @@ export default function App() {
 
   // -- HANDLERS --
 
-  // Integration: Update all months when setup adr/occ changes
-  const updateMonthlyFromSetup = (field: 'adr' | 'targetOcc', value: number) => {
-    setMonthlyTargets(prev => {
-      const nextTargets = prev.map((m, idx) => {
-        if (field === 'adr') {
-          return { ...m, arr: value };
-        } else {
-          // Apply seasonality weights to the target average
-          const weight = BASE_SEASONALITY[idx];
-          const weightedOcc = Math.min(99, Math.max(5, value * (weight / 0.75))); // normalize around 0.75 base
-          return { ...m, occ: parseFloat(weightedOcc.toFixed(1)) };
+  // --- REAL-TIME UNIFIED RECALCULATION & SYNC ENGINE ---
+  const recalcAndSyncLive = (
+    nextBasicInput: any,
+    nextMonthlyTargets: RevenueScenarioTarget[],
+    nextRevenueScenarios: RevenueScenarios,
+    nextGrowth?: any
+  ) => {
+    const currentGrowth = nextGrowth || growthParams;
+    const safeRooms = Math.max(1, Number(nextBasicInput.rooms) || 1);
+
+    // 1. Calculate revenue for active monthly targets
+    const rev = ThelokaBrain.calculateRevenue(safeRooms, nextMonthlyTargets);
+
+    // 2. Generate full USALI departmental projection
+    let proj: any = ThelokaBrain.generateProjection(nextBasicInput, rev);
+
+    // Preserve custom modified department roles/expenses if any, recalculating their totals
+    const existingDepts = projectedData?.depts || activeProperty?.depts;
+    if (existingDepts) {
+      proj.depts = JSON.parse(JSON.stringify(existingDepts));
+      Object.keys(proj.depts).forEach((k) => {
+        const dept = proj.depts[k];
+        // If restaurant is turned off, ensure fb dept has 0 roles/expenses
+        if (k === 'fb' && !nextBasicInput.hasRestaurant) {
+          dept.roles = [];
+          dept.payroll = 0;
+          dept.expenseItems = [];
+          dept.totalExpense = 0;
+          return;
         }
+        const baseRev = k === 'fb' ? rev.fb : rev.total;
+        const payroll = (dept.roles || []).reduce((acc: number, r: any) => acc + ((Number(r.count) || 0) * (Number(r.salary) || 0) * 1.2 * 12), 0);
+        dept.payroll = payroll;
+        let totalExp = 0;
+        (dept.expenseItems || []).forEach((item: any) => {
+          if (item.type === 'percent') item.calcValue = (Number(baseRev) || 0) * ((Number(item.value) || 0) / 100);
+          else item.calcValue = (Number(item.value) || 0) * 12;
+          totalExp += Number(item.calcValue);
+        });
+        dept.totalExpense = totalExp;
       });
+    }
 
-      // Also update realistic scenario in revenueScenarios
-      setRevenueScenarios(oldSc => {
-        const nextRealistic = nextTargets.map((t, idx) => ({
-          monthIdx: idx,
-          occ: t.occ,
-          arr: t.arr
-        }));
-        return {
-          ...oldSc,
-          realistic: nextRealistic
-        };
-      });
+    proj.revenueDetails = rev;
+    const lt = ThelokaBrain.generateLongTerm(proj, currentGrowth);
 
-      return nextTargets;
+    // 3. Update React States synchronously
+    setBasicInput(nextBasicInput);
+    setMonthlyTargets(nextMonthlyTargets);
+    setRevenueScenarios(nextRevenueScenarios);
+    setProjectedData(proj);
+    setLongTermData(lt);
+
+    // 4. Persist to property storage
+    syncPropertyChanges(
+      nextBasicInput,
+      nextMonthlyTargets,
+      currentGrowth,
+      nextBasicInput.capex,
+      proj.depts,
+      undefined,
+      nextRevenueScenarios
+    );
+  };
+
+  // Integration: Update all 3 scenarios, monthly targets, and live projection from Quick Setup ADR / Occ / Rooms
+  const updateMonthlyFromSetup = (
+    field: 'adr' | 'targetOcc' | 'rooms', 
+    value: number,
+    baseInputOverride?: any
+  ) => {
+    const currentInput = baseInputOverride || basicInput;
+    const nextBasicInput = {
+      ...currentInput,
+      [field]: value
+    };
+
+    const targetAdr = field === 'adr' ? value : (Number(nextBasicInput.adr) || 1000000);
+    const targetOcc = field === 'targetOcc' ? value : (Number(nextBasicInput.targetOcc) || 70);
+    const rooms = field === 'rooms' ? value : (Number(nextBasicInput.rooms) || 40);
+
+    // Update Realistic targets based on ADR & Occupancy with seasonality weights
+    const nextRealistic: RevenueScenarioTarget[] = BASE_SEASONALITY.map((weight, idx) => {
+      const weightedOcc = Math.min(99, Math.max(5, targetOcc * (weight / 0.75)));
+      return {
+        monthIdx: idx,
+        occ: parseFloat(weightedOcc.toFixed(1)),
+        arr: targetAdr
+      };
     });
+
+    // Derive Conservative & Optimistic from Realistic
+    const nextConservative: RevenueScenarioTarget[] = nextRealistic.map(t => ({
+      monthIdx: t.monthIdx,
+      occ: Math.max(15, parseFloat((t.occ * 0.82).toFixed(1))),
+      arr: Math.round(t.arr * 0.90)
+    }));
+
+    const nextOptimistic: RevenueScenarioTarget[] = nextRealistic.map(t => ({
+      monthIdx: t.monthIdx,
+      occ: Math.min(98, parseFloat((t.occ * 1.18).toFixed(1))),
+      arr: Math.round(t.arr * 1.15)
+    }));
+
+    const nextScenarios: RevenueScenarios = {
+      ...revenueScenarios,
+      realistic: nextRealistic,
+      conservative: nextConservative,
+      optimistic: nextOptimistic
+    };
+
+    const activeKey = nextScenarios.activeScenario || 'realistic';
+    const nextMonthlyTargets = nextScenarios[activeKey];
+
+    recalcAndSyncLive(nextBasicInput, nextMonthlyTargets, nextScenarios);
+  };
+
+  const handleQuickSetupChange = (field: string, val: any) => {
+    const nextBasicInput = {
+      ...basicInput,
+      [field]: val
+    };
+
+    if (field === 'adr' || field === 'targetOcc' || field === 'rooms') {
+      updateMonthlyFromSetup(field as any, Number(val) || 0, nextBasicInput);
+      return;
+    }
+
+    recalcAndSyncLive(nextBasicInput, monthlyTargets, revenueScenarios);
   };
 
   const handleGenerate = () => {
-    const revenueDetails = ThelokaBrain.calculateRevenue(basicInput.rooms, monthlyTargets);
-    const data: any = ThelokaBrain.generateProjection(basicInput, revenueDetails);
-    data.revenueDetails = revenueDetails;
-    setProjectedData(data);
-    const lt = ThelokaBrain.generateLongTerm(data, growthParams);
-    setLongTermData(lt);
+    recalcAndSyncLive(basicInput, monthlyTargets, revenueScenarios);
     setActiveView('dashboard'); 
+    showToastNotification(`Proyeksi finansial untuk "${basicInput.name}" berhasil dihitung dan disinkronkan!`);
   };
 
   const handleMonthlyChange = (idx: number, field: string, val: string) => {
-    const newTargets: any = [...monthlyTargets];
-    newTargets[idx][field] = parseFloat(val) || 0;
-    setMonthlyTargets(newTargets);
+    const activeKey = revenueScenarios.activeScenario || 'realistic';
+    handleScenarioMonthlyChange(activeKey, idx, field as any, val);
   };
 
-  // 3-Way Revenue Management Handlers
+  // 3-Way Revenue Management Handlers with Two-Way Live Sync
   const handleScenarioMonthlyChange = (
     scenarioKey: 'realistic' | 'conservative' | 'optimistic', 
     idx: number, 
@@ -867,23 +962,37 @@ export default function App() {
     val: string
   ) => {
     const numVal = parseFloat(val) || 0;
-    setRevenueScenarios(prev => {
-      const targetList = [...prev[scenarioKey]];
-      targetList[idx] = {
-        ...targetList[idx],
-        [field]: numVal
-      };
-      const updated: RevenueScenarios = {
-        ...prev,
-        [scenarioKey]: targetList
+    const targetList = [...revenueScenarios[scenarioKey]];
+    targetList[idx] = {
+      ...targetList[idx],
+      [field]: numVal
+    };
+    const updatedScenarios: RevenueScenarios = {
+      ...revenueScenarios,
+      [scenarioKey]: targetList
+    };
+
+    // If active scenario is being edited in Revenue Management, update monthlyTargets,
+    // calculate weighted Occupancy & weighted ARR, sync to Quick Setup basicInput, and recalculate all menus!
+    if (revenueScenarios.activeScenario === scenarioKey) {
+      const safeRooms = Math.max(1, basicInput.rooms || 40);
+      const totalAvail = targetList.reduce((acc, _, i) => acc + (safeRooms * getDaysInMonth(i)), 0);
+      const totalSold = targetList.reduce((acc, t, i) => acc + Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)), 0);
+      const totalRoomRev = targetList.reduce((acc, t, i) => acc + (Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)) * Number(t.arr)), 0);
+      const weightedOcc = totalAvail > 0 ? parseFloat(((totalSold / totalAvail) * 100).toFixed(1)) : basicInput.targetOcc;
+      const weightedArr = totalSold > 0 ? Math.round(totalRoomRev / totalSold) : basicInput.adr;
+
+      const syncedBasicInput = {
+        ...basicInput,
+        adr: weightedArr,
+        targetOcc: weightedOcc
       };
 
-      // If active scenario is being edited, sync to monthlyTargets & live projection
-      if (prev.activeScenario === scenarioKey) {
-        setMonthlyTargets(targetList);
-      }
-      return updated;
-    });
+      recalcAndSyncLive(syncedBasicInput, targetList, updatedScenarios);
+    } else {
+      setRevenueScenarios(updatedScenarios);
+      syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, projectedData?.depts, undefined, updatedScenarios);
+    }
   };
 
   const handleAdoptRevenueScenario = (scenarioKey: 'realistic' | 'conservative' | 'optimistic') => {
@@ -891,27 +1000,30 @@ export default function App() {
       ...revenueScenarios,
       activeScenario: scenarioKey
     };
-    setRevenueScenarios(newScenarios);
     setActiveScenarioTab(scenarioKey);
 
     const chosenTargets = newScenarios[scenarioKey];
-    setMonthlyTargets(chosenTargets);
+    const safeRooms = Math.max(1, basicInput.rooms || 40);
+    const totalAvail = chosenTargets.reduce((acc, _, i) => acc + (safeRooms * getDaysInMonth(i)), 0);
+    const totalSold = chosenTargets.reduce((acc, t, i) => acc + Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)), 0);
+    const totalRoomRev = chosenTargets.reduce((acc, t, i) => acc + (Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)) * Number(t.arr)), 0);
+    const weightedOcc = totalAvail > 0 ? parseFloat(((totalSold / totalAvail) * 100).toFixed(1)) : basicInput.targetOcc;
+    const weightedArr = totalSold > 0 ? Math.round(totalRoomRev / totalSold) : basicInput.adr;
 
-    const rev = ThelokaBrain.calculateRevenue(basicInput.rooms, chosenTargets);
-    const proj: any = ThelokaBrain.generateProjection(basicInput, rev);
-    proj.revenueDetails = rev;
-    setProjectedData(proj);
-    const lt = ThelokaBrain.generateLongTerm(proj, growthParams);
-    setLongTermData(lt);
+    const syncedBasicInput = {
+      ...basicInput,
+      adr: weightedArr,
+      targetOcc: weightedOcc
+    };
 
-    syncPropertyChanges(basicInput, chosenTargets, growthParams, basicInput.capex, proj.depts, undefined, newScenarios);
+    recalcAndSyncLive(syncedBasicInput, chosenTargets, newScenarios);
 
     const labelMap = {
       conservative: 'Konservatif (Bear Case)',
       realistic: 'Realistis (Base Case)',
       optimistic: 'Optimis (Bull Case)'
     };
-    showToastNotification(`Skenario ${labelMap[scenarioKey]} berhasil diaktifkan sebagai target utama proyeksi!`);
+    showToastNotification(`Skenario ${labelMap[scenarioKey]} aktif dan disinkronkan ke Quick Setup, P&L, dan seluruh menu!`);
   };
 
   const handleAutoGenerateScenarios = () => {
@@ -932,9 +1044,24 @@ export default function App() {
       conservative: cons,
       optimistic: opt
     };
-    setRevenueScenarios(updated);
-    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, projectedData?.depts, undefined, updated);
-    showToastNotification("Skenario Konservatif & Optimis berhasil di-generate ulang dari acuan Realistis!");
+
+    const activeKey = updated.activeScenario || 'realistic';
+    const activeTargets = updated[activeKey];
+    const safeRooms = Math.max(1, basicInput.rooms || 40);
+    const totalAvail = activeTargets.reduce((acc, _, i) => acc + (safeRooms * getDaysInMonth(i)), 0);
+    const totalSold = activeTargets.reduce((acc, t, i) => acc + Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)), 0);
+    const totalRoomRev = activeTargets.reduce((acc, t, i) => acc + (Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)) * Number(t.arr)), 0);
+    const weightedOcc = totalAvail > 0 ? parseFloat(((totalSold / totalAvail) * 100).toFixed(1)) : basicInput.targetOcc;
+    const weightedArr = totalSold > 0 ? Math.round(totalRoomRev / totalSold) : basicInput.adr;
+
+    const syncedBasicInput = {
+      ...basicInput,
+      adr: weightedArr,
+      targetOcc: weightedOcc
+    };
+
+    recalcAndSyncLive(syncedBasicInput, activeTargets, updated);
+    showToastNotification("Skenario Konservatif & Optimis berhasil di-generate ulang dari acuan Realistis dan tersinkron ke semua menu!");
   };
 
   const handleSaveRevenueScenarios = () => {
@@ -945,49 +1072,53 @@ export default function App() {
 
   const handleDownloadRevenuePdf = () => {
     try {
-      generateAndPrintRevenuePdf({
+      const fileName = generateAndPrintRevenuePdf({
         basicInput,
         revenueScenarios
       });
-      showToastNotification("Membuka dialog cetak PDF Laporan Revenue Management (3-Way)...");
-    } catch (e) {
-      console.error("PDF Print error:", e);
-      showToastNotification("Gagal mencetak PDF. Silakan coba kembali.");
+      showToastNotification(`File PDF "${fileName}" berhasil di-generate dan otomatis ter-download ke komputer!`);
+    } catch (e: any) {
+      console.error("PDF Download error:", e);
+      showToastNotification(`Gagal mendownload PDF: ${e?.message || 'Terjadi kesalahan'}`);
     }
   };
 
   const updateAndRecalculate = () => {
-    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, projectedData?.depts, undefined, revenueScenarios);
-    handleGenerate();
-    showToastNotification(`Target bulanan untuk properti "${basicInput.name}" berhasil disimpan!`);
+    recalcAndSyncLive(basicInput, monthlyTargets, revenueScenarios);
+    showToastNotification(`Target bulanan dan proyeksi seluruh menu untuk "${basicInput.name}" berhasil diperbarui!`);
   };
 
   const optimizeRevenue = () => {
     const currentList = revenueScenarios[activeScenarioTab];
+    const baseAdr = Number(basicInput.adr) || 1000000;
     const optimized = currentList.map((m, i) => {
       let newOcc = m.occ;
-      let newArr = m.arr || basicInput.adr;
+      let newArr = m.arr || baseAdr;
       if ([5,6,7,11].includes(i)) { newArr = Math.round(newArr * 1.25); newOcc = Math.min(95, m.occ + 5); } 
       else if ([0,1,9,10].includes(i)) { newArr = Math.round(newArr * 0.85); newOcc = Math.max(40, m.occ - 5); }
-      return { ...m, occ: newOcc, arr: newArr };
+      return { ...m, occ: parseFloat(newOcc.toFixed(1)), arr: newArr };
     });
 
     const updatedScenarios: RevenueScenarios = {
       ...revenueScenarios,
       [activeScenarioTab]: optimized
     };
-    setRevenueScenarios(updatedScenarios);
 
     if (revenueScenarios.activeScenario === activeScenarioTab) {
-      setMonthlyTargets(optimized);
-      const rev = ThelokaBrain.calculateRevenue(basicInput.rooms, optimized);
-      const proj: any = ThelokaBrain.generateProjection(basicInput, rev);
-      proj.revenueDetails = rev;
-      setProjectedData(proj);
-      const lt = ThelokaBrain.generateLongTerm(proj, growthParams);
-      setLongTermData(lt);
+      const safeRooms = Math.max(1, basicInput.rooms || 40);
+      const totalAvail = optimized.reduce((acc, _, i) => acc + (safeRooms * getDaysInMonth(i)), 0);
+      const totalSold = optimized.reduce((acc, t, i) => acc + Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)), 0);
+      const totalRoomRev = optimized.reduce((acc, t, i) => acc + (Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)) * Number(t.arr)), 0);
+      const weightedOcc = totalAvail > 0 ? parseFloat(((totalSold / totalAvail) * 100).toFixed(1)) : basicInput.targetOcc;
+      const weightedArr = totalSold > 0 ? Math.round(totalRoomRev / totalSold) : basicInput.adr;
+
+      const syncedBasicInput = { ...basicInput, adr: weightedArr, targetOcc: weightedOcc };
+      recalcAndSyncLive(syncedBasicInput, optimized, updatedScenarios);
+    } else {
+      setRevenueScenarios(updatedScenarios);
+      syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, projectedData?.depts, undefined, updatedScenarios);
     }
-    showToastNotification(`AI Seasonality Optimization diterapkan pada skenario ${activeScenarioTab.toUpperCase()}!`);
+    showToastNotification(`AI Seasonality Optimization diterapkan pada skenario ${activeScenarioTab.toUpperCase()} dan disinkronkan!`);
   };
 
   const simulateAiGrowth = () => {
@@ -1103,10 +1234,16 @@ export default function App() {
   };
 
   const handlePrint = () => {
-    generateAndPrintPnLPdf({
-      basicInput,
-      projectedData: getCurrentProjectedData(),
-    });
+    try {
+      const fileName = generateAndPrintPnLPdf({
+        basicInput,
+        projectedData: getCurrentProjectedData(),
+      });
+      showToastNotification(`File PDF "${fileName}" berhasil di-generate dan otomatis ter-download ke komputer!`);
+    } catch (e: any) {
+      console.error("PDF Download error:", e);
+      showToastNotification(`Gagal mendownload PDF: ${e?.message || 'Terjadi kesalahan'}`);
+    }
   };
 
   const applyUmkScaleToAllDepartments = (newUmk: number) => {
@@ -1208,22 +1345,9 @@ export default function App() {
 
   // -- NON-OPERATING FIXED CHARGE HANDLERS (USALI Standard) --
   const updateFixedCharge = (id: string, updates: any) => {
-    setBasicInput(prev => {
-      const updated = (prev.fixedCharges || []).map((fc: any) => fc.id === id ? { ...fc, ...updates } : fc);
-      return { ...prev, fixedCharges: updated };
-    });
-    setProjectedData((prev: any) => {
-      if (!prev) return prev;
-      const updated = (prev.fixedCharges || []).map((fc: any) => fc.id === id ? { ...fc, ...updates } : fc);
-      const totalFixedChargesAnnual = updated
-        .filter((fc: any) => fc.active)
-        .reduce((sum: number, fc: any) => sum + ((Number(fc.monthlyAmount) || 0) * 12), 0);
-      const res = { ...prev, fixedCharges: updated, totalFixedChargesAnnual };
-      if (longTermData) {
-        setLongTermData(ThelokaBrain.generateLongTerm(res, growthParams));
-      }
-      return res;
-    });
+    const updated = (basicInput.fixedCharges || []).map((fc: any) => fc.id === id ? { ...fc, ...updates } : fc);
+    const nextBasicInput = { ...basicInput, fixedCharges: updated };
+    recalcAndSyncLive(nextBasicInput, monthlyTargets, revenueScenarios);
   };
 
   const addFixedCharge = () => {
@@ -1235,41 +1359,19 @@ export default function App() {
       category: 'Lainnya',
       notes: 'Beban tetap non-operasional baru'
     };
-    setBasicInput(prev => ({
-      ...prev,
-      fixedCharges: [...(prev.fixedCharges || []), newCharge]
-    }));
-    setProjectedData((prev: any) => {
-      if (!prev) return prev;
-      const updated = [...(prev.fixedCharges || []), newCharge];
-      const totalFixedChargesAnnual = updated
-        .filter((fc: any) => fc.active)
-        .reduce((sum: number, fc: any) => sum + ((Number(fc.monthlyAmount) || 0) * 12), 0);
-      const res = { ...prev, fixedCharges: updated, totalFixedChargesAnnual };
-      if (longTermData) {
-        setLongTermData(ThelokaBrain.generateLongTerm(res, growthParams));
-      }
-      return res;
-    });
+    const nextBasicInput = {
+      ...basicInput,
+      fixedCharges: [...(basicInput.fixedCharges || []), newCharge]
+    };
+    recalcAndSyncLive(nextBasicInput, monthlyTargets, revenueScenarios);
   };
 
   const removeFixedCharge = (id: string) => {
-    setBasicInput(prev => ({
-      ...prev,
-      fixedCharges: (prev.fixedCharges || []).filter((fc: any) => fc.id !== id)
-    }));
-    setProjectedData((prev: any) => {
-      if (!prev) return prev;
-      const updated = (prev.fixedCharges || []).filter((fc: any) => fc.id !== id);
-      const totalFixedChargesAnnual = updated
-        .filter((fc: any) => fc.active)
-        .reduce((sum: number, fc: any) => sum + ((Number(fc.monthlyAmount) || 0) * 12), 0);
-      const res = { ...prev, fixedCharges: updated, totalFixedChargesAnnual };
-      if (longTermData) {
-        setLongTermData(ThelokaBrain.generateLongTerm(res, growthParams));
-      }
-      return res;
-    });
+    const nextBasicInput = {
+      ...basicInput,
+      fixedCharges: (basicInput.fixedCharges || []).filter((fc: any) => fc.id !== id)
+    };
+    recalcAndSyncLive(nextBasicInput, monthlyTargets, revenueScenarios);
   };
 
   // Baseline initial calculation so departments and reports are ready immediately
@@ -2180,7 +2282,9 @@ export default function App() {
              >
                <FileSpreadsheet className="w-4 h-4 mr-2" /> Export Dept. CSV
              </button>
-             <button onClick={handlePrint} className="text-white bg-blue-900 px-4 py-2 rounded-lg text-sm font-bold flex items-center print:hidden"><Download className="w-4 h-4 mr-2" /> PDF Report</button>
+             <button onClick={handlePrint} className="text-white bg-blue-900 hover:bg-blue-800 px-4 py-2 rounded-lg text-sm font-bold flex items-center shadow transition-all print:hidden" title="Download Laporan Resmi Konsolidasi P&L USALI dalam format PDF langsung ke komputer">
+               <Download className="w-4 h-4 mr-2 text-blue-200" /> Download PDF P&L
+             </button>
            </div>
          </div>
          <div className="space-y-3 text-sm">
@@ -2322,13 +2426,13 @@ export default function App() {
            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
              <h3 className="font-bold text-slate-700 mb-4 border-b border-slate-100 pb-2">Informasi Umum</h3>
              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <InputCard label="Nama Properti" icon={Building2} value={basicInput.name} onChange={(e: any)=>setBasicInput({...basicInput, name: e.target.value})} />
-                <InputCard label="Area / Kota" icon={MapPin} value={basicInput.location} onChange={(e: any)=>setBasicInput({...basicInput, location: e.target.value})} />
+                <InputCard label="Nama Properti" icon={Building2} value={basicInput.name} onChange={(e: any)=>handleQuickSetupChange('name', e.target.value)} />
+                <InputCard label="Area / Kota" icon={MapPin} value={basicInput.location} onChange={(e: any)=>handleQuickSetupChange('location', e.target.value)} />
                 <div className="col-span-2">
-                   <InputCard label="Alamat Lengkap" icon={Navigation} value={basicInput.address} onChange={(e: any)=>setBasicInput({...basicInput, address: e.target.value})} />
+                   <InputCard label="Alamat Lengkap" icon={Navigation} value={basicInput.address} onChange={(e: any)=>handleQuickSetupChange('address', e.target.value)} />
                 </div>
-                <InputCard label="Jumlah Kamar" icon={BedDouble} value={basicInput.rooms} onChange={(e: any)=>setBasicInput({...basicInput, rooms: parseInt(e.target.value)||0})} type="number" />
-                <InputCard label="Tipe Aset" icon={Hotel} value={basicInput.type} onChange={(e: any)=>setBasicInput({...basicInput, type: e.target.value})} />
+                <InputCard label="Jumlah Kamar" icon={BedDouble} value={basicInput.rooms} onChange={(e: any)=>handleQuickSetupChange('rooms', parseInt(e.target.value)||0)} type="number" />
+                <InputCard label="Tipe Aset" icon={Hotel} value={basicInput.type} onChange={(e: any)=>handleQuickSetupChange('type', e.target.value)} />
              </div>
              <div className="mt-4 pt-4 border-t border-slate-100 bg-blue-50/50 p-4 rounded-lg">
                 <div className="grid grid-cols-2 gap-4">
@@ -2338,9 +2442,8 @@ export default function App() {
                       type="number" 
                       value={basicInput.adr} 
                       onChange={(e) => {
-                        const val = parseFloat(e.target.value)||0;
-                        setBasicInput(prev => ({...prev, adr: val}));
-                        updateMonthlyFromSetup('adr', val); // Integration update
+                        const val = parseFloat(e.target.value) || 0;
+                        handleQuickSetupChange('adr', val);
                       }} 
                       className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 font-bold text-blue-900" 
                     />
@@ -2351,15 +2454,17 @@ export default function App() {
                       type="number" 
                       value={basicInput.targetOcc} 
                       onChange={(e) => {
-                        const val = parseFloat(e.target.value)||0;
-                        setBasicInput(prev => ({...prev, targetOcc: val}));
-                        updateMonthlyFromSetup('targetOcc', val); // Integration update
+                        const val = parseFloat(e.target.value) || 0;
+                        handleQuickSetupChange('targetOcc', val);
                       }} 
                       className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 font-bold text-blue-900" 
                     />
                   </div>
                 </div>
-                <p className="text-[10px] text-blue-500 mt-2 italic font-medium">* Merubah nilai di atas akan mereset rincian target di menu Revenue Management.</p>
+                <div className="flex items-center space-x-1.5 mt-2.5 text-[11px] text-blue-700 font-medium bg-blue-100/60 p-2 rounded-lg">
+                  <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>Sinkron otomatis 2 arah dengan Revenue Management (3 Skenario), Consolidated P&L, dan seluruh menu.</span>
+                </div>
              </div>
            </div>
            
@@ -2391,7 +2496,8 @@ export default function App() {
                      const key = e.target.value;
                      const selected = REGIONAL_UMK_DB[key];
                      if (selected) {
-                       setBasicInput(prev => ({ ...prev, umkArea: key, customUmk: selected.umk }));
+                       const next = { ...basicInput, umkArea: key, customUmk: selected.umk };
+                       recalcAndSyncLive(next, monthlyTargets, revenueScenarios);
                      }
                    }}
                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500"
@@ -2413,7 +2519,8 @@ export default function App() {
                    value={basicInput.customUmk || 3130000}
                    onChange={(e) => {
                      const val = parseFloat(e.target.value) || 0;
-                     setBasicInput(prev => ({ ...prev, customUmk: val, umkArea: 'custom' }));
+                     const next = { ...basicInput, customUmk: val, umkArea: 'custom' };
+                     recalcAndSyncLive(next, monthlyTargets, revenueScenarios);
                    }}
                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                  />
@@ -2437,7 +2544,7 @@ export default function App() {
            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
              <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-2">
                <h3 className="font-bold text-slate-700 flex items-center"><Coins className="w-5 h-5 mr-2 text-yellow-500"/> Konfigurasi Sumber Pendapatan</h3>
-               <button onClick={() => setBasicInput(prev => ({...prev, otherStreams: [...prev.otherStreams, { id: Date.now(), name: 'New Income', value: 0, type: 'percent', active: true }]}))} className="text-xs bg-blue-600 text-white px-3 py-1 rounded-full flex items-center hover:bg-blue-700">
+               <button onClick={() => handleQuickSetupChange('otherStreams', [...basicInput.otherStreams, { id: Date.now(), name: 'New Income', value: 0, type: 'percent', active: true }])} className="text-xs bg-blue-600 text-white px-3 py-1 rounded-full flex items-center hover:bg-blue-700">
                  <Plus className="w-3 h-3 mr-1"/> Tambah Income Lain
                </button>
              </div>
@@ -2448,13 +2555,13 @@ export default function App() {
                       <Utensils className={`w-4 h-4 mr-2 ${basicInput.hasRestaurant ? 'text-orange-600' : 'text-slate-400'}`} />
                       <span className={`text-sm font-bold ${basicInput.hasRestaurant ? 'text-orange-800' : 'text-slate-500'}`}>Restoran & F&B Outlet</span>
                    </div>
-                   <button onClick={() => setBasicInput({...basicInput, hasRestaurant: !basicInput.hasRestaurant})} className="text-blue-600 focus:outline-none">
+                   <button onClick={() => handleQuickSetupChange('hasRestaurant', !basicInput.hasRestaurant)} className="text-blue-600 focus:outline-none">
                      {basicInput.hasRestaurant ? <ToggleRight className="w-8 h-8 text-blue-600"/> : <ToggleLeft className="w-8 h-8 text-slate-300"/>}
                    </button>
                 </div>
                 {basicInput.hasRestaurant && (
                    <div className="flex items-center mt-2 pl-6">
-                     <input type="number" value={basicInput.fbRatio} onChange={(e)=>setBasicInput({...basicInput, fbRatio: parseFloat(e.target.value)||0})} className="w-20 bg-white border border-orange-200 rounded px-2 py-1 font-bold text-orange-900 text-sm" />
+                     <input type="number" value={basicInput.fbRatio} onChange={(e)=>handleQuickSetupChange('fbRatio', parseFloat(e.target.value)||0)} className="w-20 bg-white border border-orange-200 rounded px-2 py-1 font-bold text-orange-900 text-sm" />
                      <span className="ml-2 text-xs text-orange-600">% dari Room Revenue</span>
                    </div>
                 )}
@@ -2478,14 +2585,14 @@ export default function App() {
                         <button onClick={() => {
                              const newS = [...basicInput.otherStreams];
                              newS[idx].active = !newS[idx].active;
-                             setBasicInput({...basicInput, otherStreams: newS});
+                             handleQuickSetupChange('otherStreams', newS);
                         }} className="focus:outline-none">
                           {stream.active ? <ToggleRight className="w-8 h-8 text-emerald-600"/> : <ToggleLeft className="w-8 h-8 text-slate-300"/>}
                         </button>
                         <button onClick={() => {
                              const newS = [...basicInput.otherStreams];
                              newS.splice(idx, 1);
-                             setBasicInput({...basicInput, otherStreams: newS});
+                             handleQuickSetupChange('otherStreams', newS);
                         }} className="text-slate-300 hover:text-red-400">
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -2499,7 +2606,7 @@ export default function App() {
                           onChange={(e) => {
                              const newS = [...basicInput.otherStreams];
                              newS[idx].value = parseFloat(e.target.value)||0;
-                             setBasicInput({...basicInput, otherStreams: newS});
+                             handleQuickSetupChange('otherStreams', newS);
                           }}
                           className="w-24 bg-white border border-emerald-200 rounded px-2 py-1 font-bold text-emerald-900 text-sm" 
                         />
@@ -2508,7 +2615,7 @@ export default function App() {
                           onChange={(e) => {
                              const newS = [...basicInput.otherStreams];
                              newS[idx].type = e.target.value;
-                             setBasicInput({...basicInput, otherStreams: newS});
+                             handleQuickSetupChange('otherStreams', newS);
                           }}
                           className="text-xs border border-emerald-200 rounded px-2 py-1 bg-white text-emerald-700"
                         >
@@ -2686,28 +2793,28 @@ export default function App() {
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-fit">
           <h3 className="font-bold text-slate-700 mb-4 border-b border-slate-100 pb-2">Fee Management</h3>
           <div className="space-y-4">
-             <div onClick={() => setBasicInput({...basicInput, feeModel: '15_percent'})} className={`cursor-pointer p-4 rounded-xl border-2 transition-all ${basicInput.feeModel === '15_percent' ? 'border-blue-500 bg-blue-50' : 'border-slate-100 hover:border-slate-300'}`}>
+             <div onClick={() => handleQuickSetupChange('feeModel', '15_percent')} className={`cursor-pointer p-4 rounded-xl border-2 transition-all ${basicInput.feeModel === '15_percent' ? 'border-blue-500 bg-blue-50' : 'border-slate-100 hover:border-slate-300'}`}>
                 <div className="flex justify-between items-center mb-2">
                   <span className="font-bold text-sm text-slate-700">Revenue Share</span>
                   {basicInput.feeModel === '15_percent' && <CheckCircle className="w-5 h-5 text-blue-600" />}
                 </div>
                 <div className="flex items-center space-x-2">
-                   <input type="number" value={basicInput.customFee.revPct} onChange={(e) => setBasicInput({...basicInput, customFee: {...basicInput.customFee, revPct: parseFloat(e.target.value)}})} className="w-16 bg-white border border-slate-300 rounded px-2 py-1 text-sm font-bold" disabled={basicInput.feeModel !== '15_percent'} />
+                   <input type="number" value={basicInput.customFee.revPct} onChange={(e) => handleQuickSetupChange('customFee', {...basicInput.customFee, revPct: parseFloat(e.target.value)||0})} className="w-16 bg-white border border-slate-300 rounded px-2 py-1 text-sm font-bold" disabled={basicInput.feeModel !== '15_percent'} />
                    <span className="text-sm text-slate-500">% dari Total Revenue</span>
                 </div>
              </div>
-             <div onClick={() => setBasicInput({...basicInput, feeModel: 'split'})} className={`cursor-pointer p-4 rounded-xl border-2 transition-all ${basicInput.feeModel === 'split' ? 'border-blue-500 bg-blue-50' : 'border-slate-100 hover:border-slate-300'}`}>
+             <div onClick={() => handleQuickSetupChange('feeModel', 'split')} className={`cursor-pointer p-4 rounded-xl border-2 transition-all ${basicInput.feeModel === 'split' ? 'border-blue-500 bg-blue-50' : 'border-slate-100 hover:border-slate-300'}`}>
                 <div className="flex justify-between items-center mb-2">
                   <span className="font-bold text-sm text-slate-700">Split Fee (Incentive)</span>
                   {basicInput.feeModel === 'split' && <CheckCircle className="w-5 h-5 text-blue-600" />}
                 </div>
                 <div className="space-y-2">
                    <div className="flex items-center space-x-2">
-                      <input type="number" value={basicInput.customFee.baseRevPct} onChange={(e) => setBasicInput({...basicInput, customFee: {...basicInput.customFee, baseRevPct: parseFloat(e.target.value)}})} className="w-16 bg-white border border-slate-300 rounded px-2 py-1 text-sm font-bold" disabled={basicInput.feeModel !== 'split'} />
+                      <input type="number" value={basicInput.customFee.baseRevPct} onChange={(e) => handleQuickSetupChange('customFee', {...basicInput.customFee, baseRevPct: parseFloat(e.target.value)||0})} className="w-16 bg-white border border-slate-300 rounded px-2 py-1 text-sm font-bold" disabled={basicInput.feeModel !== 'split'} />
                       <span className="text-xs text-slate-500">% Base Revenue</span>
                    </div>
                    <div className="flex items-center space-x-2">
-                      <input type="number" value={basicInput.customFee.gopPct} onChange={(e) => setBasicInput({...basicInput, customFee: {...basicInput.customFee, gopPct: parseFloat(e.target.value)}})} className="w-16 bg-white border border-slate-300 rounded px-2 py-1 text-sm font-bold" disabled={basicInput.feeModel !== 'split'} />
+                      <input type="number" value={basicInput.customFee.gopPct} onChange={(e) => handleQuickSetupChange('customFee', {...basicInput.customFee, gopPct: parseFloat(e.target.value)||0})} className="w-16 bg-white border border-slate-300 rounded px-2 py-1 text-sm font-bold" disabled={basicInput.feeModel !== 'split'} />
                       <span className="text-xs text-slate-500">% Incentive GOP</span>
                    </div>
                 </div>
@@ -3294,9 +3401,10 @@ export default function App() {
             </div>
             <button
               onClick={handleDownloadRevenuePdf}
-              className="text-xs font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-xl border border-emerald-200 flex items-center transition-colors"
+              className="text-xs font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-xl border border-emerald-200 flex items-center transition-colors shadow-sm"
+              title="Download Laporan Resmi Eksekutif 3-Way Revenue Management dalam format PDF Landscape langsung ke komputer"
             >
-              <Printer className="w-3.5 h-3.5 mr-1.5" /> Cetak Lembar Ini
+              <Download className="w-3.5 h-3.5 mr-1.5" /> Download PDF (3-Way)
             </button>
           </div>
 
@@ -3528,15 +3636,12 @@ export default function App() {
                projectedData={getCurrentProjectedData()} 
                monthlyTargets={monthlyTargets} 
                onApplyScenario={(modInput: any, modTargets: any[]) => {
-                 setBasicInput(modInput);
-                 setMonthlyTargets(modTargets);
-                 const rev = ThelokaBrain.calculateRevenue(modInput.rooms, modTargets);
-                 const data: any = ThelokaBrain.generateProjection(modInput, rev);
-                 data.revenueDetails = rev;
-                 setProjectedData(data);
-                 const lt = ThelokaBrain.generateLongTerm(data, growthParams);
-                 setLongTermData(lt);
-                 alert(`Skenario berhasil diadopsi! Target Okupansi menjadi ${modInput.targetOcc}% dan ADR menjadi ${formatIDR(modInput.adr)}.`);
+                 const newScenarios: RevenueScenarios = {
+                   ...revenueScenarios,
+                   realistic: modTargets
+                 };
+                 recalcAndSyncLive(modInput, modTargets, newScenarios);
+                 showToastNotification(`Skenario berhasil diadopsi! Target Okupansi menjadi ${modInput.targetOcc}% dan ADR menjadi ${formatIDR(modInput.adr)}.`);
                }}
              />
            )}
