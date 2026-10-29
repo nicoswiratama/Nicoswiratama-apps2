@@ -86,7 +86,8 @@ import { PropertySelector } from './components/PropertySelector';
 import { GmailAuthModal } from './components/GmailAuthModal';
 import { SuperAdminModal } from './components/SuperAdminModal';
 import { generateAndPrintPnLPdf } from './services/pnlPdfReport';
-import { UserAccount, PropertyData, CapexSetup } from './types';
+import { generateAndPrintRevenuePdf } from './services/revenuePdfReport';
+import { UserAccount, PropertyData, CapexSetup, RevenueScenarios, RevenueScenarioTarget } from './types';
 import {
   getStoredUsers,
   getStoredCurrentUser,
@@ -132,6 +133,39 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 // --- DATA CONSTANTS ---
 // Seasonality multipliers relative to 1.0 (average)
 const BASE_SEASONALITY = [0.70, 0.65, 0.60, 0.75, 0.70, 0.80, 0.85, 0.88, 0.75, 0.72, 0.68, 0.90];
+
+export const createDefaultRevenueScenarios = (baseTargets: any[]): RevenueScenarios => {
+  const realistic: RevenueScenarioTarget[] = (baseTargets && baseTargets.length === 12)
+    ? baseTargets.map((t, idx) => ({
+        monthIdx: idx,
+        occ: Number(t.occ) || 70,
+        arr: Number(t.arr) || 1000000
+      }))
+    : BASE_SEASONALITY.map((occ, idx) => ({
+        monthIdx: idx,
+        occ: parseFloat((occ * 100).toFixed(1)),
+        arr: 1200000
+      }));
+
+  const conservative: RevenueScenarioTarget[] = realistic.map(t => ({
+    monthIdx: t.monthIdx,
+    occ: Math.max(15, parseFloat((t.occ * 0.82).toFixed(1))),
+    arr: Math.round(t.arr * 0.90)
+  }));
+
+  const optimistic: RevenueScenarioTarget[] = realistic.map(t => ({
+    monthIdx: t.monthIdx,
+    occ: Math.min(98, parseFloat((t.occ * 1.18).toFixed(1))),
+    arr: Math.round(t.arr * 1.15)
+  }));
+
+  return {
+    activeScenario: 'realistic',
+    realistic,
+    conservative,
+    optimistic
+  };
+};
 
 const HOTEL_NAMES_DB = [
   "Village Resort", "Boutique Villa", "Luxury Suites", "Garden Stay", 
@@ -547,7 +581,16 @@ export default function App() {
     };
   });
 
-  // -- REVENUE MANAGEMENT STATE --
+  // -- REVENUE MANAGEMENT STATE & MULTI-SCENARIO (3-WAY) --
+  const [revenueScenarios, setRevenueScenarios] = useState<RevenueScenarios>(() => {
+    const p = properties.find(item => item.id === activePropertyId) || properties[0];
+    if (p?.revenueScenarios) {
+      return p.revenueScenarios;
+    }
+    return createDefaultRevenueScenarios(p?.monthlyTargets || []);
+  });
+  const [activeScenarioTab, setActiveScenarioTab] = useState<'realistic' | 'conservative' | 'optimistic'>('realistic');
+
   const [monthlyTargets, setMonthlyTargets] = useState(() => {
     const p = properties.find(item => item.id === activePropertyId) || properties[0];
     return p.monthlyTargets;
@@ -612,7 +655,8 @@ export default function App() {
     updatedGrowth?: any, 
     updatedCapex?: CapexSetup,
     updatedDepts?: any,
-    updatedManningKpi?: any
+    updatedManningKpi?: any,
+    updatedRevenueScenarios?: RevenueScenarios
   ) => {
     setProperties(prev => {
       const idx = prev.findIndex(p => p.id === activePropertyId);
@@ -622,6 +666,7 @@ export default function App() {
       const newCapex = updatedCapex || updatedBasicInput.capex || target.capex || DEFAULT_CAPEX;
       const newDepts = updatedDepts !== undefined ? updatedDepts : (target.depts || projectedData?.depts);
       const newManningKpi = updatedManningKpi !== undefined ? updatedManningKpi : target.customManningKpi;
+      const newScenarios = updatedRevenueScenarios !== undefined ? updatedRevenueScenarios : (target.revenueScenarios || revenueScenarios);
       
       updatedList[idx] = {
         ...target,
@@ -632,6 +677,7 @@ export default function App() {
         capex: newCapex,
         depts: newDepts ? JSON.parse(JSON.stringify(newDepts)) : undefined,
         customManningKpi: newManningKpi ? JSON.parse(JSON.stringify(newManningKpi)) : undefined,
+        revenueScenarios: newScenarios ? JSON.parse(JSON.stringify(newScenarios)) : undefined,
         updatedAt: new Date().toISOString()
       };
       saveStoredProperties(updatedList);
@@ -649,6 +695,9 @@ export default function App() {
       const inputVal = { ...prop.basicInput, capex: capexVal };
       setBasicInput(inputVal);
       setMonthlyTargets(prop.monthlyTargets);
+      const sc = prop.revenueScenarios || createDefaultRevenueScenarios(prop.monthlyTargets);
+      setRevenueScenarios(sc);
+      setActiveScenarioTab(sc.activeScenario || 'realistic');
       const gp = prop.growthParams || { revGrowth: 0.05, costInflation: 0.03 };
       setGrowthParams(gp);
       const rev = ThelokaBrain.calculateRevenue(inputVal.rooms, prop.monthlyTargets);
@@ -765,16 +814,33 @@ export default function App() {
 
   // Integration: Update all months when setup adr/occ changes
   const updateMonthlyFromSetup = (field: 'adr' | 'targetOcc', value: number) => {
-    setMonthlyTargets(prev => prev.map((m, idx) => {
-      if (field === 'adr') {
-        return { ...m, arr: value };
-      } else {
-        // Apply seasonality weights to the target average
-        const weight = BASE_SEASONALITY[idx];
-        const weightedOcc = Math.min(99, Math.max(5, value * (weight / 0.75))); // normalize around 0.75 base
-        return { ...m, occ: parseFloat(weightedOcc.toFixed(1)) };
-      }
-    }));
+    setMonthlyTargets(prev => {
+      const nextTargets = prev.map((m, idx) => {
+        if (field === 'adr') {
+          return { ...m, arr: value };
+        } else {
+          // Apply seasonality weights to the target average
+          const weight = BASE_SEASONALITY[idx];
+          const weightedOcc = Math.min(99, Math.max(5, value * (weight / 0.75))); // normalize around 0.75 base
+          return { ...m, occ: parseFloat(weightedOcc.toFixed(1)) };
+        }
+      });
+
+      // Also update realistic scenario in revenueScenarios
+      setRevenueScenarios(oldSc => {
+        const nextRealistic = nextTargets.map((t, idx) => ({
+          monthIdx: idx,
+          occ: t.occ,
+          arr: t.arr
+        }));
+        return {
+          ...oldSc,
+          realistic: nextRealistic
+        };
+      });
+
+      return nextTargets;
+    });
   };
 
   const handleGenerate = () => {
@@ -793,21 +859,135 @@ export default function App() {
     setMonthlyTargets(newTargets);
   };
 
+  // 3-Way Revenue Management Handlers
+  const handleScenarioMonthlyChange = (
+    scenarioKey: 'realistic' | 'conservative' | 'optimistic', 
+    idx: number, 
+    field: 'occ' | 'arr', 
+    val: string
+  ) => {
+    const numVal = parseFloat(val) || 0;
+    setRevenueScenarios(prev => {
+      const targetList = [...prev[scenarioKey]];
+      targetList[idx] = {
+        ...targetList[idx],
+        [field]: numVal
+      };
+      const updated: RevenueScenarios = {
+        ...prev,
+        [scenarioKey]: targetList
+      };
+
+      // If active scenario is being edited, sync to monthlyTargets & live projection
+      if (prev.activeScenario === scenarioKey) {
+        setMonthlyTargets(targetList);
+      }
+      return updated;
+    });
+  };
+
+  const handleAdoptRevenueScenario = (scenarioKey: 'realistic' | 'conservative' | 'optimistic') => {
+    const newScenarios: RevenueScenarios = {
+      ...revenueScenarios,
+      activeScenario: scenarioKey
+    };
+    setRevenueScenarios(newScenarios);
+    setActiveScenarioTab(scenarioKey);
+
+    const chosenTargets = newScenarios[scenarioKey];
+    setMonthlyTargets(chosenTargets);
+
+    const rev = ThelokaBrain.calculateRevenue(basicInput.rooms, chosenTargets);
+    const proj: any = ThelokaBrain.generateProjection(basicInput, rev);
+    proj.revenueDetails = rev;
+    setProjectedData(proj);
+    const lt = ThelokaBrain.generateLongTerm(proj, growthParams);
+    setLongTermData(lt);
+
+    syncPropertyChanges(basicInput, chosenTargets, growthParams, basicInput.capex, proj.depts, undefined, newScenarios);
+
+    const labelMap = {
+      conservative: 'Konservatif (Bear Case)',
+      realistic: 'Realistis (Base Case)',
+      optimistic: 'Optimis (Bull Case)'
+    };
+    showToastNotification(`Skenario ${labelMap[scenarioKey]} berhasil diaktifkan sebagai target utama proyeksi!`);
+  };
+
+  const handleAutoGenerateScenarios = () => {
+    const baseSource = revenueScenarios.realistic;
+    const cons: RevenueScenarioTarget[] = baseSource.map(t => ({
+      monthIdx: t.monthIdx,
+      occ: Math.max(15, parseFloat((t.occ * 0.82).toFixed(1))),
+      arr: Math.round(t.arr * 0.90)
+    }));
+    const opt: RevenueScenarioTarget[] = baseSource.map(t => ({
+      monthIdx: t.monthIdx,
+      occ: Math.min(98, parseFloat((t.occ * 1.18).toFixed(1))),
+      arr: Math.round(t.arr * 1.15)
+    }));
+
+    const updated: RevenueScenarios = {
+      ...revenueScenarios,
+      conservative: cons,
+      optimistic: opt
+    };
+    setRevenueScenarios(updated);
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, projectedData?.depts, undefined, updated);
+    showToastNotification("Skenario Konservatif & Optimis berhasil di-generate ulang dari acuan Realistis!");
+  };
+
+  const handleSaveRevenueScenarios = () => {
+    const curData = getCurrentProjectedData();
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, curData.depts, undefined, revenueScenarios);
+    showToastNotification(`Seluruh Skenario Revenue (3-Way) untuk "${basicInput.name}" berhasil disimpan!`);
+  };
+
+  const handleDownloadRevenuePdf = () => {
+    try {
+      generateAndPrintRevenuePdf({
+        basicInput,
+        revenueScenarios
+      });
+      showToastNotification("Membuka dialog cetak PDF Laporan Revenue Management (3-Way)...");
+    } catch (e) {
+      console.error("PDF Print error:", e);
+      showToastNotification("Gagal mencetak PDF. Silakan coba kembali.");
+    }
+  };
+
   const updateAndRecalculate = () => {
-    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, projectedData?.depts);
+    syncPropertyChanges(basicInput, monthlyTargets, growthParams, basicInput.capex, projectedData?.depts, undefined, revenueScenarios);
     handleGenerate();
     showToastNotification(`Target bulanan untuk properti "${basicInput.name}" berhasil disimpan!`);
   };
 
   const optimizeRevenue = () => {
-    const optimized = monthlyTargets.map((m, i) => {
+    const currentList = revenueScenarios[activeScenarioTab];
+    const optimized = currentList.map((m, i) => {
       let newOcc = m.occ;
-      let newArr = basicInput.adr;
-      if ([5,6,7,11].includes(i)) { newArr = basicInput.adr * 1.25; newOcc = Math.min(95, m.occ + 5); } 
-      else if ([0,1,9,10].includes(i)) { newArr = basicInput.adr * 0.85; newOcc = Math.max(40, m.occ - 5); }
+      let newArr = m.arr || basicInput.adr;
+      if ([5,6,7,11].includes(i)) { newArr = Math.round(newArr * 1.25); newOcc = Math.min(95, m.occ + 5); } 
+      else if ([0,1,9,10].includes(i)) { newArr = Math.round(newArr * 0.85); newOcc = Math.max(40, m.occ - 5); }
       return { ...m, occ: newOcc, arr: newArr };
     });
-    setMonthlyTargets(optimized);
+
+    const updatedScenarios: RevenueScenarios = {
+      ...revenueScenarios,
+      [activeScenarioTab]: optimized
+    };
+    setRevenueScenarios(updatedScenarios);
+
+    if (revenueScenarios.activeScenario === activeScenarioTab) {
+      setMonthlyTargets(optimized);
+      const rev = ThelokaBrain.calculateRevenue(basicInput.rooms, optimized);
+      const proj: any = ThelokaBrain.generateProjection(basicInput, rev);
+      proj.revenueDetails = rev;
+      setProjectedData(proj);
+      const lt = ThelokaBrain.generateLongTerm(proj, growthParams);
+      setLongTermData(lt);
+    }
+    showToastNotification(`AI Seasonality Optimization diterapkan pada skenario ${activeScenarioTab.toUpperCase()}!`);
   };
 
   const simulateAiGrowth = () => {
@@ -2589,78 +2769,670 @@ export default function App() {
     </div>
   );
 
-  const renderRevenueView = () => (
-    <div className="max-w-7xl mx-auto pt-6 animate-fade-in">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800 flex items-center"><BarChart3 className="w-6 h-6 mr-3 text-blue-600" /> Revenue Management</h2>
-          <p className="text-sm text-slate-500 ml-9 mt-1">Monthly Detail Targets</p>
-        </div>
-        <div className="flex space-x-3">
-          <button onClick={optimizeRevenue} className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center shadow hover:bg-purple-700">
-            <BrainCircuit className="w-4 h-4 mr-2" /> AI Optimize (Seasonality)
-          </button>
-          <button onClick={updateAndRecalculate} className="bg-blue-900 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center shadow hover:bg-blue-800">
-            <Save className="w-4 h-4 mr-2" /> Save & Update Reports
-          </button>
-        </div>
-      </div>
+  const renderRevenueView = () => {
+    const calcMetrics = (targets: RevenueScenarioTarget[]) => {
+      const safeRooms = Math.max(1, basicInput.rooms || 40);
+      const totalAvail = targets.reduce((acc, _, i) => acc + (safeRooms * getDaysInMonth(i)), 0);
+      const totalSold = targets.reduce((acc, t, i) => acc + Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)), 0);
+      const totalRev = targets.reduce((acc, t, i) => acc + (Math.round((Number(t.occ) / 100) * safeRooms * getDaysInMonth(i)) * Number(t.arr)), 0);
+      const weightedOcc = totalAvail > 0 ? (totalSold / totalAvail) : 0;
+      const weightedArr = totalSold > 0 ? Math.round(totalRev / totalSold) : 0;
+      const weightedRevpar = totalAvail > 0 ? Math.round(totalRev / totalAvail) : 0;
+      return { totalAvail, totalSold, totalRev, weightedOcc, weightedArr, weightedRevpar };
+    };
 
-      <div className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-right">
-            <thead>
-              <tr className="bg-slate-50 text-xs font-bold text-slate-500 uppercase border-b border-slate-200">
-                <th className="py-4 px-4 text-left w-32 sticky left-0 bg-slate-50">Metric</th>
-                {monthlyTargets.map((m, i) => <th key={i} className="px-2 min-w-[80px]">{MONTH_NAMES[i]}</th>)}
-                <th className="px-4 min-w-[100px] bg-slate-100">TOTAL</th>
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              <tr className="border-b border-slate-100 bg-slate-50/30">
-                <td className="py-3 px-4 text-left font-bold text-slate-700 sticky left-0 bg-white">ROOMS AVAILABLE</td>
-                {monthlyTargets.map((m, i) => <td key={i} className="px-2 text-slate-600">{basicInput.rooms * getDaysInMonth(i)}</td>)}
-                <td className="px-4 font-bold bg-slate-50">{basicInput.rooms * 365}</td>
-              </tr>
-              <tr className="border-b border-slate-100 bg-blue-50/20">
-                <td className="py-3 px-4 text-left font-bold text-slate-700 sticky left-0 bg-white">ROOMS SOLD</td>
-                {monthlyTargets.map((m, i) => <td key={i} className="px-2 text-slate-600">{Math.round((m.occ/100) * basicInput.rooms * getDaysInMonth(i))}</td>)}
-                <td className="px-4 font-bold bg-slate-50">{Math.round(monthlyTargets.reduce((a,b,i)=>a + (b.occ/100 * basicInput.rooms * getDaysInMonth(i)),0))}</td>
-              </tr>
-              <tr className="border-b border-slate-100">
-                <td className="py-3 px-4 text-left font-bold text-blue-900 sticky left-0 bg-white">OCCUPANCY %</td>
-                {monthlyTargets.map((m, i) => (
-                  <td key={i} className="px-1"><input type="number" value={m.occ} onChange={(e) => handleMonthlyChange(i, 'occ', e.target.value)} className="w-full text-center bg-white border border-blue-200 rounded py-1 font-bold text-blue-600 focus:ring-2 focus:ring-blue-500"/></td>
-                ))}
-                <td className="px-4 font-bold bg-slate-50 text-blue-900">
-                  {formatPercent(monthlyTargets.reduce((a,b,i)=>a + (Number(b.occ)/100 * basicInput.rooms * getDaysInMonth(i)),0) / (basicInput.rooms * 365))}
-                </td>
-              </tr>
-              <tr className="border-b border-slate-100">
-                <td className="py-3 px-4 text-left font-bold text-emerald-700 sticky left-0 bg-white">ARR (Net)</td>
-                {monthlyTargets.map((m, i) => (
-                  <td key={i} className="px-1"><input type="number" value={m.arr} onChange={(e) => handleMonthlyChange(i, 'arr', e.target.value)} className="w-full text-right bg-white text-xs border border-emerald-200 rounded py-1 font-bold text-emerald-700 focus:ring-2 focus:ring-emerald-500"/></td>
-                ))}
-                <td className="px-4 font-bold bg-slate-50 text-emerald-900">
-                  {formatIDR(monthlyTargets.reduce((a,b,i) => a + (Math.round((Number(b.occ)/100) * basicInput.rooms * getDaysInMonth(i)) * Number(b.arr)), 0) / Math.max(1, monthlyTargets.reduce((a,b,i) => a + (Math.round((Number(b.occ)/100) * basicInput.rooms * getDaysInMonth(i))), 0)))}
-                </td>
-              </tr>
-              <tr className="border-b border-slate-100 bg-yellow-50/50">
-                <td className="py-3 px-4 text-left font-bold text-slate-700 sticky left-0 bg-white">REVPAR</td>
-                {monthlyTargets.map((m, i) => <td key={i} className="px-2 font-mono text-xs text-slate-600">{formatIDR((m.arr * m.occ)/100)}</td>)}
-                <td className="px-4 font-bold bg-slate-50">-</td>
-              </tr>
-              <tr className="bg-slate-50 font-bold text-slate-800 border-t border-slate-200">
-                <td className="py-3 px-4 text-left sticky left-0 bg-slate-50">ROOM REVENUE</td>
-                {monthlyTargets.map((m, i) => { const sold = Math.round((Number(m.occ)/100) * basicInput.rooms * getDaysInMonth(i)); return <td key={i} className="px-2 text-xs">{formatIDR((sold * Number(m.arr))/1000000)}M</td> })}
-                <td className="px-4 text-blue-900">{formatIDR(monthlyTargets.reduce((a,b,i) => a + (Math.round((Number(b.occ)/100) * basicInput.rooms * getDaysInMonth(i)) * Number(b.arr)), 0))}</td>
-              </tr>
-            </tbody>
-          </table>
+    const metricsConservative = calcMetrics(revenueScenarios.conservative);
+    const metricsRealistic = calcMetrics(revenueScenarios.realistic);
+    const metricsOptimistic = calcMetrics(revenueScenarios.optimistic);
+
+    const currentScenarioTargets = revenueScenarios[activeScenarioTab] || revenueScenarios.realistic;
+    const currentMetrics = calcMetrics(currentScenarioTargets);
+
+    const scenarioMeta = {
+      conservative: {
+        title: "1. Skenario Konservatif (Bear Case)",
+        shortTitle: "Konservatif",
+        desc: "Simulasi okupansi rendah saat low-season berkepanjangan atau persaingan tarif ketat.",
+        color: "amber",
+        borderColor: "border-amber-400",
+        bgLight: "bg-amber-50/70",
+        badgeBg: "bg-amber-100 text-amber-900 border-amber-300",
+        activeBorder: "ring-2 ring-amber-500 border-amber-500 bg-amber-50/40",
+      },
+      realistic: {
+        title: "2. Skenario Realistis (Base Case)",
+        shortTitle: "Realistis",
+        desc: "Target acuan anggaran operasional tahunan hotel dengan kurva musiman wajar.",
+        color: "blue",
+        borderColor: "border-blue-400",
+        bgLight: "bg-blue-50/70",
+        badgeBg: "bg-blue-100 text-blue-900 border-blue-300",
+        activeBorder: "ring-2 ring-blue-600 border-blue-600 bg-blue-50/40",
+      },
+      optimistic: {
+        title: "3. Skenario Optimis (Bull Case)",
+        shortTitle: "Optimis",
+        desc: "Simulasi target maksimal pada periode peak-season atau tingginya permintaan MICE / FIT.",
+        color: "emerald",
+        borderColor: "border-emerald-400",
+        bgLight: "bg-emerald-50/70",
+        badgeBg: "bg-emerald-100 text-emerald-900 border-emerald-300",
+        activeBorder: "ring-2 ring-emerald-500 border-emerald-500 bg-emerald-50/40",
+      }
+    };
+
+    return (
+      <div className="max-w-7xl mx-auto pt-4 space-y-6 animate-fade-in pb-12">
+        {/* Top Header & Executive Action Bar */}
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+          <div>
+            <div className="flex items-center space-x-2.5">
+              <div className="p-2 bg-blue-50 rounded-xl text-blue-600">
+                <BarChart3 className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h2 className="text-xl font-bold text-slate-900">Revenue Management • Multi-Scenario (3-Way)</h2>
+                  <span className="text-[10px] font-mono bg-blue-100 text-blue-900 font-extrabold px-2 py-0.5 rounded-full border border-blue-200">
+                    {basicInput.name} ({basicInput.rooms} Kamar)
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Bandingkan 3 opsi target kamar (Konservatif, Realistis, Optimis), tentukan skenario proyeksi utama, dan cetak PDF resmi.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center flex-wrap gap-2.5">
+            <button 
+              onClick={optimizeRevenue} 
+              className="bg-purple-600 hover:bg-purple-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold flex items-center transition-all shadow-sm active:scale-95"
+              title="Optimalkan kurva harga dan okupansi berdasarkan musim (High vs Low season)"
+            >
+              <BrainCircuit className="w-4 h-4 mr-1.5" /> AI Seasonality
+            </button>
+            <button 
+              onClick={handleAutoGenerateScenarios} 
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold flex items-center transition-all shadow-sm active:scale-95"
+              title="Generate ulang skenario Konservatif (-18% Occ, -10% ADR) dan Optimis (+18% Occ, +15% ADR) dari target Realistis"
+            >
+              <Sparkles className="w-4 h-4 mr-1.5 text-yellow-300" /> Auto-Generate 3-Way
+            </button>
+            <button 
+              onClick={handleDownloadRevenuePdf} 
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold flex items-center transition-all shadow-sm active:scale-95"
+              title="Download dan cetak Laporan Resmi Eksekutif 3-Way Revenue Management dalam format PDF Landscape"
+            >
+              <Download className="w-4 h-4 mr-1.5 text-emerald-100" /> Download PDF (3-Way)
+            </button>
+            <button 
+              onClick={handleSaveRevenueScenarios} 
+              className="bg-blue-900 hover:bg-blue-800 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center transition-all shadow-md active:scale-95"
+              title={`Simpan seluruh skenario dan target bulanan ke data properti "${basicInput.name}"`}
+            >
+              <Save className="w-4 h-4 mr-1.5 text-yellow-300" /> Simpan Skenario
+            </button>
+          </div>
+        </div>
+
+        {/* 3-Way Scenario Switcher Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* 1. Konservatif */}
+          <div 
+            onClick={() => setActiveScenarioTab('conservative')}
+            className={`cursor-pointer rounded-2xl p-5 border transition-all relative ${
+              activeScenarioTab === 'conservative' 
+                ? 'ring-2 ring-amber-500 border-amber-400 bg-amber-50/40 shadow-md' 
+                : 'border-slate-200 bg-white hover:border-amber-300 hover:shadow-sm'
+            }`}
+          >
+            <div className="flex justify-between items-start mb-2">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-amber-800">
+                  Option 1
+                </span>
+                <h3 className="font-bold text-slate-800 text-sm">Konservatif (Bear Case)</h3>
+              </div>
+              <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                revenueScenarios.activeScenario === 'conservative'
+                  ? 'bg-amber-500 text-white border-amber-600'
+                  : 'bg-amber-100 text-amber-800 border-amber-200'
+              }`}>
+                {revenueScenarios.activeScenario === 'conservative' ? '★ AKTIF PROYEKSI' : 'ALTERNATIF'}
+              </span>
+            </div>
+
+            <div className="mt-2 mb-3">
+              <div className="text-xl font-black font-mono text-slate-900">
+                {formatIDR(metricsConservative.totalRev)}
+              </div>
+              <div className="text-[11px] text-slate-500">Estimasi Total Pendapatan Kamar / Thn</div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs pt-3 border-t border-slate-100">
+              <div>
+                <span className="text-[10px] text-slate-400 block">Avg Occupancy</span>
+                <span className="font-bold text-slate-700">{formatPercent(metricsConservative.weightedOcc)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Rooms Sold</span>
+                <span className="font-bold text-slate-700">{metricsConservative.totalSold.toLocaleString('id-ID')} Rms</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Avg ARR (Net)</span>
+                <span className="font-bold text-slate-700 font-mono text-[11px]">{formatIDR(metricsConservative.weightedArr)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">RevPAR</span>
+                <span className="font-bold text-slate-700 font-mono text-[11px]">{formatIDR(metricsConservative.weightedRevpar)}</span>
+              </div>
+            </div>
+
+            <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
+              <span className="text-[10px] font-bold text-amber-700">
+                Deviasi: {formatPercent((metricsConservative.totalRev - metricsRealistic.totalRev) / Math.max(1, metricsRealistic.totalRev))}
+              </span>
+              {revenueScenarios.activeScenario !== 'conservative' ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleAdoptRevenueScenario('conservative');
+                  }}
+                  className="text-[10px] font-bold bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1 rounded-lg transition-colors"
+                >
+                  Adopsi Skenario
+                </button>
+              ) : (
+                <span className="text-[10px] font-bold text-emerald-700 flex items-center">
+                  <CheckCircle className="w-3 h-3 mr-1" /> Digunakan
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* 2. Realistis */}
+          <div 
+            onClick={() => setActiveScenarioTab('realistic')}
+            className={`cursor-pointer rounded-2xl p-5 border transition-all relative ${
+              activeScenarioTab === 'realistic' 
+                ? 'ring-2 ring-blue-600 border-blue-500 bg-blue-50/40 shadow-md' 
+                : 'border-slate-200 bg-white hover:border-blue-300 hover:shadow-sm'
+            }`}
+          >
+            <div className="flex justify-between items-start mb-2">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-blue-700">
+                  Option 2 (Default)
+                </span>
+                <h3 className="font-bold text-slate-800 text-sm">Realistis (Base Case)</h3>
+              </div>
+              <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                revenueScenarios.activeScenario === 'realistic'
+                  ? 'bg-blue-600 text-white border-blue-700'
+                  : 'bg-blue-100 text-blue-800 border-blue-200'
+              }`}>
+                {revenueScenarios.activeScenario === 'realistic' ? '★ AKTIF PROYEKSI' : 'BASELINE'}
+              </span>
+            </div>
+
+            <div className="mt-2 mb-3">
+              <div className="text-xl font-black font-mono text-slate-900">
+                {formatIDR(metricsRealistic.totalRev)}
+              </div>
+              <div className="text-[11px] text-slate-500">Estimasi Total Pendapatan Kamar / Thn</div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs pt-3 border-t border-slate-100">
+              <div>
+                <span className="text-[10px] text-slate-400 block">Avg Occupancy</span>
+                <span className="font-bold text-blue-900">{formatPercent(metricsRealistic.weightedOcc)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Rooms Sold</span>
+                <span className="font-bold text-slate-700">{metricsRealistic.totalSold.toLocaleString('id-ID')} Rms</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Avg ARR (Net)</span>
+                <span className="font-bold text-slate-700 font-mono text-[11px]">{formatIDR(metricsRealistic.weightedArr)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">RevPAR</span>
+                <span className="font-bold text-slate-700 font-mono text-[11px]">{formatIDR(metricsRealistic.weightedRevpar)}</span>
+              </div>
+            </div>
+
+            <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
+              <span className="text-[10px] font-bold text-blue-700">
+                Baseline Acuan (100%)
+              </span>
+              {revenueScenarios.activeScenario !== 'realistic' ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleAdoptRevenueScenario('realistic');
+                  }}
+                  className="text-[10px] font-bold bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded-lg transition-colors"
+                >
+                  Adopsi Skenario
+                </button>
+              ) : (
+                <span className="text-[10px] font-bold text-emerald-700 flex items-center">
+                  <CheckCircle className="w-3 h-3 mr-1" /> Digunakan
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* 3. Optimis */}
+          <div 
+            onClick={() => setActiveScenarioTab('optimistic')}
+            className={`cursor-pointer rounded-2xl p-5 border transition-all relative ${
+              activeScenarioTab === 'optimistic' 
+                ? 'ring-2 ring-emerald-500 border-emerald-400 bg-emerald-50/40 shadow-md' 
+                : 'border-slate-200 bg-white hover:border-emerald-300 hover:shadow-sm'
+            }`}
+          >
+            <div className="flex justify-between items-start mb-2">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700">
+                  Option 3
+                </span>
+                <h3 className="font-bold text-slate-800 text-sm">Optimis (Bull Case)</h3>
+              </div>
+              <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                revenueScenarios.activeScenario === 'optimistic'
+                  ? 'bg-emerald-600 text-white border-emerald-700'
+                  : 'bg-emerald-100 text-emerald-800 border-emerald-200'
+              }`}>
+                {revenueScenarios.activeScenario === 'optimistic' ? '★ AKTIF PROYEKSI' : 'ALTERNATIF'}
+              </span>
+            </div>
+
+            <div className="mt-2 mb-3">
+              <div className="text-xl font-black font-mono text-slate-900">
+                {formatIDR(metricsOptimistic.totalRev)}
+              </div>
+              <div className="text-[11px] text-slate-500">Estimasi Total Pendapatan Kamar / Thn</div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs pt-3 border-t border-slate-100">
+              <div>
+                <span className="text-[10px] text-slate-400 block">Avg Occupancy</span>
+                <span className="font-bold text-emerald-700">{formatPercent(metricsOptimistic.weightedOcc)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Rooms Sold</span>
+                <span className="font-bold text-slate-700">{metricsOptimistic.totalSold.toLocaleString('id-ID')} Rms</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">Avg ARR (Net)</span>
+                <span className="font-bold text-slate-700 font-mono text-[11px]">{formatIDR(metricsOptimistic.weightedArr)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">RevPAR</span>
+                <span className="font-bold text-slate-700 font-mono text-[11px]">{formatIDR(metricsOptimistic.weightedRevpar)}</span>
+              </div>
+            </div>
+
+            <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
+              <span className="text-[10px] font-bold text-emerald-700">
+                Deviasi: +{formatPercent((metricsOptimistic.totalRev - metricsRealistic.totalRev) / Math.max(1, metricsRealistic.totalRev))}
+              </span>
+              {revenueScenarios.activeScenario !== 'optimistic' ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleAdoptRevenueScenario('optimistic');
+                  }}
+                  className="text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-lg transition-colors"
+                >
+                  Adopsi Skenario
+                </button>
+              ) : (
+                <span className="text-[10px] font-bold text-emerald-700 flex items-center">
+                  <CheckCircle className="w-3 h-3 mr-1" /> Digunakan
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Currently Selected Scenario Banner with Quick Status */}
+        <div className="bg-slate-900 text-white p-4 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shadow-md">
+          <div className="flex items-center space-x-3">
+            <div className="w-8 h-8 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center font-bold">
+              <BarChart3 className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-xs text-slate-300">
+                Sedang Mengedit Tabel 12-Bulan: <span className="font-extrabold text-white uppercase">{scenarioMeta[activeScenarioTab].title}</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                {scenarioMeta[activeScenarioTab].desc}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2 shrink-0">
+            {revenueScenarios.activeScenario === activeScenarioTab ? (
+              <span className="text-xs font-bold text-emerald-400 bg-emerald-950/70 border border-emerald-700/60 px-3 py-1.5 rounded-xl flex items-center">
+                <CheckCircle className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />
+                Skenario Ini Aktif di Proyeksi P&L
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleAdoptRevenueScenario(activeScenarioTab)}
+                className="text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-1.5 rounded-xl flex items-center transition-all shadow-sm"
+              >
+                <Target className="w-3.5 h-3.5 mr-1.5 text-yellow-300" />
+                Jadikan Skenario Ini Target Utama
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 12-Month Detailed Breakdown Table (Matching Existing Layout) */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 bg-slate-50/70">
+            <div>
+              <h3 className="font-bold text-slate-800 text-sm flex items-center">
+                <CalendarDays className="w-4 h-4 mr-2 text-blue-600" />
+                Rincian Target Bulanan 12-Bulan ({scenarioMeta[activeScenarioTab].shortTitle})
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Nilai Okupansi (%) dan ARR (Net IDR) dapat diedit langsung per bulan pada tabel di bawah ini.
+              </p>
+            </div>
+            <div className="flex items-center space-x-2">
+              <span className="text-[10px] font-mono text-slate-500 bg-white px-2 py-1 rounded border">
+                Total Kamar: {basicInput.rooms} Units
+              </span>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-right">
+              <thead>
+                <tr className="bg-slate-50 text-xs font-bold text-slate-500 uppercase border-b border-slate-200">
+                  <th className="py-3.5 px-4 text-left w-36 sticky left-0 bg-slate-50">Metric</th>
+                  {currentScenarioTargets.map((_, i) => (
+                    <th key={i} className="px-2 min-w-[85px]">{MONTH_NAMES[i]}</th>
+                  ))}
+                  <th className="px-4 min-w-[120px] bg-slate-100 font-extrabold text-slate-800">TOTAL / AVG</th>
+                </tr>
+              </thead>
+              <tbody className="text-sm">
+                {/* Rooms Available */}
+                <tr className="border-b border-slate-100 bg-slate-50/30">
+                  <td className="py-2.5 px-4 text-left font-bold text-slate-700 sticky left-0 bg-white">
+                    ROOMS AVAILABLE
+                  </td>
+                  {currentScenarioTargets.map((_, i) => (
+                    <td key={i} className="px-2 text-slate-600 font-mono text-xs">
+                      {(basicInput.rooms * getDaysInMonth(i)).toLocaleString('id-ID')}
+                    </td>
+                  ))}
+                  <td className="px-4 font-bold bg-slate-50 font-mono text-xs text-slate-800">
+                    {currentMetrics.totalAvail.toLocaleString('id-ID')}
+                  </td>
+                </tr>
+
+                {/* Rooms Sold */}
+                <tr className="border-b border-slate-100 bg-blue-50/20">
+                  <td className="py-2.5 px-4 text-left font-bold text-slate-700 sticky left-0 bg-white">
+                    ROOMS SOLD
+                  </td>
+                  {currentScenarioTargets.map((m, i) => {
+                    const sold = Math.round((Number(m.occ) / 100) * basicInput.rooms * getDaysInMonth(i));
+                    return (
+                      <td key={i} className="px-2 text-slate-700 font-mono font-medium text-xs">
+                        {sold.toLocaleString('id-ID')}
+                      </td>
+                    );
+                  })}
+                  <td className="px-4 font-bold bg-slate-50 font-mono text-xs text-blue-900">
+                    {currentMetrics.totalSold.toLocaleString('id-ID')}
+                  </td>
+                </tr>
+
+                {/* Occupancy % (Editable) */}
+                <tr className="border-b border-slate-100">
+                  <td className="py-2.5 px-4 text-left font-bold text-blue-900 sticky left-0 bg-white">
+                    OCCUPANCY (%)
+                  </td>
+                  {currentScenarioTargets.map((m, i) => (
+                    <td key={i} className="px-1">
+                      <input 
+                        type="number" 
+                        step="0.5"
+                        value={m.occ} 
+                        onChange={(e) => handleScenarioMonthlyChange(activeScenarioTab, i, 'occ', e.target.value)} 
+                        className="w-full text-center bg-white border border-blue-200 rounded py-1 font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none text-xs"
+                      />
+                    </td>
+                  ))}
+                  <td className="px-4 font-extrabold bg-slate-50 text-blue-900 font-mono text-xs">
+                    {formatPercent(currentMetrics.weightedOcc)}
+                  </td>
+                </tr>
+
+                {/* ARR Net (Editable) */}
+                <tr className="border-b border-slate-100">
+                  <td className="py-2.5 px-4 text-left font-bold text-emerald-700 sticky left-0 bg-white">
+                    ARR (Net IDR)
+                  </td>
+                  {currentScenarioTargets.map((m, i) => (
+                    <td key={i} className="px-1">
+                      <input 
+                        type="number" 
+                        step="10000"
+                        value={m.arr} 
+                        onChange={(e) => handleScenarioMonthlyChange(activeScenarioTab, i, 'arr', e.target.value)} 
+                        className="w-full text-right bg-white text-xs border border-emerald-200 rounded py-1 font-bold text-emerald-700 focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+                      />
+                    </td>
+                  ))}
+                  <td className="px-4 font-extrabold bg-slate-50 text-emerald-900 font-mono text-xs">
+                    {formatIDR(currentMetrics.weightedArr)}
+                  </td>
+                </tr>
+
+                {/* REVPAR */}
+                <tr className="border-b border-slate-100 bg-yellow-50/30">
+                  <td className="py-2.5 px-4 text-left font-bold text-slate-700 sticky left-0 bg-white">
+                    REVPAR
+                  </td>
+                  {currentScenarioTargets.map((m, i) => (
+                    <td key={i} className="px-2 font-mono text-xs text-slate-600">
+                      {formatIDR((Number(m.arr) * Number(m.occ)) / 100)}
+                    </td>
+                  ))}
+                  <td className="px-4 font-bold bg-slate-50 font-mono text-xs text-slate-800">
+                    {formatIDR(currentMetrics.weightedRevpar)}
+                  </td>
+                </tr>
+
+                {/* ROOM REVENUE */}
+                <tr className="bg-slate-50 font-bold text-slate-800 border-t-2 border-slate-200">
+                  <td className="py-3 px-4 text-left sticky left-0 bg-slate-50 font-extrabold">
+                    ROOM REVENUE
+                  </td>
+                  {currentScenarioTargets.map((m, i) => { 
+                    const sold = Math.round((Number(m.occ) / 100) * basicInput.rooms * getDaysInMonth(i)); 
+                    const rev = sold * Number(m.arr);
+                    return (
+                      <td key={i} className="px-2 text-xs font-mono font-bold text-slate-900">
+                        {formatIDR(rev / 1000000)}M
+                      </td>
+                    );
+                  })}
+                  <td className="px-4 text-blue-900 font-mono font-extrabold text-sm">
+                    {formatIDR(currentMetrics.totalRev)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* 3-Way Comparative Executive Summary Table */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="p-4 border-b border-slate-100 bg-slate-50/70 flex justify-between items-center">
+            <div>
+              <h3 className="font-bold text-slate-800 text-sm flex items-center">
+                <GitCompare className="w-4 h-4 mr-2 text-indigo-600" />
+                Matriks Perbandingan Eksekutif (3-Way USALI Comparative Analysis)
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Tinjauan komprehensif metrik performa kamar untuk dewan direksi & pemegang saham
+              </p>
+            </div>
+            <button
+              onClick={handleDownloadRevenuePdf}
+              className="text-xs font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-xl border border-emerald-200 flex items-center transition-colors"
+            >
+              <Printer className="w-3.5 h-3.5 mr-1.5" /> Cetak Lembar Ini
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-100/80 text-xs font-bold text-slate-600 uppercase border-b border-slate-200">
+                  <th className="py-3 px-4 text-left">Metrik Kinerja Finansial</th>
+                  <th className="py-3 px-4 text-right bg-amber-50/60 text-amber-900">1. Konservatif (Bear)</th>
+                  <th className="py-3 px-4 text-right bg-blue-50/60 text-blue-900">2. Realistis (Baseline)</th>
+                  <th className="py-3 px-4 text-right bg-emerald-50/60 text-emerald-900">3. Optimis (Bull)</th>
+                  <th className="py-3 px-4 text-right">Deviasi Bull vs Bear</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                <tr>
+                  <td className="py-2.5 px-4 font-semibold text-slate-700">Total Kamar Tersedia (Rooms Available)</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-slate-600">{metricsConservative.totalAvail.toLocaleString('id-ID')} Rms</td>
+                  <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-800">{metricsRealistic.totalAvail.toLocaleString('id-ID')} Rms</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-slate-600">{metricsOptimistic.totalAvail.toLocaleString('id-ID')} Rms</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-xs text-slate-400">Tetap (365 Hari)</td>
+                </tr>
+
+                <tr>
+                  <td className="py-2.5 px-4 font-semibold text-slate-700">Total Kamar Terjual (Rooms Sold)</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-amber-900 font-bold">{metricsConservative.totalSold.toLocaleString('id-ID')} Rms</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-blue-900 font-bold">{metricsRealistic.totalSold.toLocaleString('id-ID')} Rms</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-emerald-900 font-bold">{metricsOptimistic.totalSold.toLocaleString('id-ID')} Rms</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-xs text-indigo-700 font-bold">
+                    +{(metricsOptimistic.totalSold - metricsConservative.totalSold).toLocaleString('id-ID')} Rms
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="py-2.5 px-4 font-semibold text-slate-700">Rata-rata Okupansi Tahunan (%)</td>
+                  <td className="py-2.5 px-4 text-right font-mono font-bold text-amber-800">{formatPercent(metricsConservative.weightedOcc)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono font-bold text-blue-800">{formatPercent(metricsRealistic.weightedOcc)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-800">{formatPercent(metricsOptimistic.weightedOcc)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-xs font-bold text-emerald-700">
+                    +{((metricsOptimistic.weightedOcc - metricsConservative.weightedOcc) * 100).toFixed(1)}% Pts
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="py-2.5 px-4 font-semibold text-slate-700">Rata-rata Harga Kamar (ARR Net)</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-slate-700">{formatIDR(metricsConservative.weightedArr)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono font-bold text-blue-950">{formatIDR(metricsRealistic.weightedArr)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-slate-700">{formatIDR(metricsOptimistic.weightedArr)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-xs font-bold text-slate-700">
+                    +{formatPercent((metricsOptimistic.weightedArr - metricsConservative.weightedArr) / Math.max(1, metricsConservative.weightedArr))}
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="py-2.5 px-4 font-semibold text-slate-700">RevPAR Tahunan (Revenue Per Available Room)</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-slate-700">{formatIDR(metricsConservative.weightedRevpar)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono font-bold text-blue-950">{formatIDR(metricsRealistic.weightedRevpar)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-slate-700">{formatIDR(metricsOptimistic.weightedRevpar)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-xs font-bold text-slate-700">
+                    +{formatPercent((metricsOptimistic.weightedRevpar - metricsConservative.weightedRevpar) / Math.max(1, metricsConservative.weightedRevpar))}
+                  </td>
+                </tr>
+
+                <tr className="bg-slate-900 text-white font-extrabold text-sm">
+                  <td className="py-3.5 px-4 text-left">
+                    TOTAL ROOM REVENUE (Pendapatan Kamar Bersih)
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono text-amber-300">
+                    {formatIDR(metricsConservative.totalRev)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono text-blue-300">
+                    {formatIDR(metricsRealistic.totalRev)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono text-emerald-300">
+                    {formatIDR(metricsOptimistic.totalRev)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono text-xs text-emerald-400">
+                    +{formatIDR(metricsOptimistic.totalRev - metricsConservative.totalRev)}
+                  </td>
+                </tr>
+
+                <tr className="bg-slate-50 text-xs">
+                  <td className="py-3 px-4 font-bold text-slate-600">Status Proyeksi di Laporan P&L</td>
+                  <td className="py-3 px-4 text-right">
+                    {revenueScenarios.activeScenario === 'conservative' ? (
+                      <span className="font-bold text-amber-800 bg-amber-100 px-2.5 py-1 rounded-full">
+                        ★ Digunakan
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => handleAdoptRevenueScenario('conservative')}
+                        className="text-slate-500 hover:text-amber-800 font-bold underline cursor-pointer"
+                      >
+                        Pilih Skenario
+                      </button>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    {revenueScenarios.activeScenario === 'realistic' ? (
+                      <span className="font-bold text-blue-800 bg-blue-100 px-2.5 py-1 rounded-full">
+                        ★ Digunakan
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => handleAdoptRevenueScenario('realistic')}
+                        className="text-slate-500 hover:text-blue-800 font-bold underline cursor-pointer"
+                      >
+                        Pilih Skenario
+                      </button>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    {revenueScenarios.activeScenario === 'optimistic' ? (
+                      <span className="font-bold text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-full">
+                        ★ Digunakan
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => handleAdoptRevenueScenario('optimistic')}
+                        className="text-slate-500 hover:text-emerald-800 font-bold underline cursor-pointer"
+                      >
+                        Pilih Skenario
+                      </button>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 text-right text-slate-400 font-mono">
+                    {revenueScenarios.activeScenario.toUpperCase()}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex font-sans text-slate-900">

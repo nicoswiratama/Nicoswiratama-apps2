@@ -39,6 +39,19 @@ export interface CapexSetup {
   workingCapital: number;
 }
 
+export interface RevenueScenarioTarget {
+  monthIdx: number;
+  occ: number;
+  arr: number;
+}
+
+export interface RevenueScenarios {
+  activeScenario: 'realistic' | 'conservative' | 'optimistic';
+  realistic: RevenueScenarioTarget[];
+  conservative: RevenueScenarioTarget[];
+  optimistic: RevenueScenarioTarget[];
+}
+
 export interface PropertyData {
   id: string;
   name: string;
@@ -61,5 +74,6 @@ export interface PropertyData {
     maxPayrollPct?: number;
     benchmarkType?: string;
   };
+  revenueScenarios?: RevenueScenarios;
 }
 
