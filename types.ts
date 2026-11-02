@@ -52,6 +52,23 @@ export interface RevenueScenarios {
   optimistic: RevenueScenarioTarget[];
 }
 
+export interface CompetitorItem {
+  id: string;
+  name: string;
+  distanceKm: number;
+  stars: number;
+  tier: string;
+  rooms: number;
+  rate: number;
+  estimatedOcc: number;
+  amenities?: string[];
+  strengths?: string;
+  weaknesses?: string;
+  threatLevel: 'high' | 'medium' | 'low';
+  source?: 'ai_detected' | 'manual';
+  updatedAt?: string;
+}
+
 export interface PropertyData {
   id: string;
   name: string;
@@ -75,5 +92,8 @@ export interface PropertyData {
     benchmarkType?: string;
   };
   revenueScenarios?: RevenueScenarios;
+  competitors?: CompetitorItem[];
+  competitorAiAnalysis?: string;
 }
+
 

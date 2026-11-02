@@ -1,5 +1,8 @@
 {
   "name": "Theloka Projection Apps",
   "description": "Dynamic AI Scaling Hotel Management System.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

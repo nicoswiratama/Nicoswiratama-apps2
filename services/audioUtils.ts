@@ -1,4 +1,7 @@
-import { Blob } from '@google/genai';
+export interface PcmBlob {
+  data: string;
+  mimeType: string;
+}
 
 export function base64ToUint8Array(base64: string): Uint8Array {
   const binaryString = atob(base64);
@@ -41,7 +44,7 @@ export async function decodeAudioData(
 }
 
 // Fixed createPcmBlob to use the correct 32768 scaling factor for Int16 conversion
-export function createPcmBlob(data: Float32Array): Blob {
+export function createPcmBlob(data: Float32Array): PcmBlob {
   const l = data.length;
   const int16 = new Int16Array(l);
   for (let i = 0; i < l; i++) {

@@ -1,4 +1,3 @@
-import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { createPcmBlob, decodeAudioData, base64ToUint8Array } from './audioUtils';
 
 // --- Chat Service ---
@@ -10,50 +9,62 @@ export const sendChatMessageStream = async (
   onChunk: (text: string) => void
 ) => {
   try {
-    // Initialize right before usage to ensure current API key is picked up
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const model = 'gemini-3-flash-preview'; 
-    
-    // Multi-modal check
-    if (image) {
-       const responseStream = await ai.models.generateContentStream({
-         model,
-         contents: {
-           parts: [
-             { inlineData: { mimeType: 'image/jpeg', data: image } },
-             { text: message }
-           ]
-         }
-       });
-       
-       for await (const chunk of responseStream) {
-         if (chunk.text) {
-           onChunk(chunk.text);
-         }
-       }
-       return;
-    }
-
-    // Text-only chat using the chat helper
-    const chat = ai.chats.create({
-      model,
-      history: history as any,
+    const response = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        history,
+        message,
+        image,
+      }),
     });
 
-    const result = await chat.sendMessageStream({ message });
-    
-    for await (const chunk of result) {
-      if (chunk.text) {
-        onChunk(chunk.text);
-      }
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
 
+    if (!response.body) {
+      throw new Error('ReadableStream not supported in this browser.');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data:')) continue;
+        const dataStr = trimmed.replace(/^data:\s*/, '');
+        if (dataStr === '[DONE]') {
+          return;
+        }
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (parsed.text) {
+            onChunk(parsed.text);
+          } else if (parsed.error) {
+            console.error('Server chat error:', parsed.error);
+          }
+        } catch {
+          // ignore json parse error on partial lines
+        }
+      }
+    }
   } catch (error) {
     console.error("Chat error:", error);
     throw error;
   }
 };
-
 
 // --- Live Service ---
 
@@ -63,44 +74,69 @@ export class GeminiLiveService {
   private inputSource: MediaStreamAudioSourceNode | null = null;
   private processor: ScriptProcessorNode | null = null;
   private nextStartTime = 0;
-  private sessionPromise: Promise<any> | null = null;
-  private session: any = null;
+  private ws: WebSocket | null = null;
   private stream: MediaStream | null = null;
-  
+
   // Callbacks for UI updates
   public onVolumeChange: ((vol: number) => void) | null = null;
   public onClose: (() => void) | null = null;
 
   async connect(onMessage: (text: string | null) => void) {
     try {
-      // Re-initialize client to pick up potentially new key selections
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       this.inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       this.outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      
+
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      this.sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-        callbacks: {
-          onopen: this.handleOpen.bind(this),
-          onmessage: (msg) => this.handleMessage(msg, onMessage),
-          onclose: () => {
-            console.log("Session closed");
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/api/live-ws`;
+
+      this.ws = new WebSocket(wsUrl);
+
+      this.ws.onopen = () => {
+        console.log("Connected to server Live API WebSocket proxy");
+        this.startAudioProcessing();
+      };
+
+      this.ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'audio' && msg.data && this.outputAudioContext) {
+            const audioBuffer = await decodeAudioData(
+              base64ToUint8Array(msg.data),
+              this.outputAudioContext
+            );
+
+            // Schedule gapless playback
+            this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
+            const source = this.outputAudioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(this.outputAudioContext.destination);
+            source.start(this.nextStartTime);
+            this.nextStartTime += audioBuffer.duration;
+          } else if (msg.type === 'interrupted') {
+            console.log("Interrupted!");
+            this.nextStartTime = 0;
+          } else if (msg.type === 'turnComplete') {
+            onMessage(null);
+          } else if (msg.type === 'closed') {
             if (this.onClose) this.onClose();
-          },
-          onerror: (err) => console.error("Session error:", err),
-        },
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-          },
-          systemInstruction: "You are a helpful, witty, and concise AI assistant named Nexus.",
-        },
-      });
-      
-      this.session = await this.sessionPromise;
+          } else if (msg.type === 'error') {
+            console.error("Server Live API error:", msg.error);
+          }
+        } catch (e) {
+          console.error("Error processing server WS message:", e);
+        }
+      };
+
+      this.ws.onclose = () => {
+        console.log("Live WebSocket closed");
+        if (this.onClose) this.onClose();
+      };
+
+      this.ws.onerror = (err) => {
+        console.error("Live WebSocket error:", err);
+      };
 
     } catch (error) {
       console.error("Failed to connect live session:", error);
@@ -108,8 +144,7 @@ export class GeminiLiveService {
     }
   }
 
-  private handleOpen() {
-    console.log("Live Session Opened");
+  private startAudioProcessing() {
     if (!this.inputAudioContext || !this.stream) return;
 
     this.inputSource = this.inputAudioContext.createMediaStreamSource(this.stream);
@@ -117,7 +152,7 @@ export class GeminiLiveService {
 
     this.processor.onaudioprocess = (e) => {
       const inputData = e.inputBuffer.getChannelData(0);
-      
+
       // Calculate volume for visualizer
       let sum = 0;
       for (let i = 0; i < inputData.length; i++) {
@@ -126,13 +161,13 @@ export class GeminiLiveService {
       const volume = Math.sqrt(sum / inputData.length) * 100;
       if (this.onVolumeChange) this.onVolumeChange(volume);
 
-      // Create blob and send via the resolved session promise to avoid race conditions
+      // Create PCM blob and send to server WS proxy
       const pcmBlob = createPcmBlob(inputData);
-      
-      if (this.sessionPromise) {
-        this.sessionPromise.then((session) => {
-          session.sendRealtimeInput({ media: pcmBlob });
-        });
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({
+          type: 'realtime_input',
+          media: pcmBlob
+        }));
       }
     };
 
@@ -140,54 +175,21 @@ export class GeminiLiveService {
     this.processor.connect(this.inputAudioContext.destination);
   }
 
-  private async handleMessage(message: LiveServerMessage, onMessage: (text: string | null) => void) {
-    // 1. Handle Audio output stream from model
-    const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-    if (base64Audio && this.outputAudioContext) {
-      const audioBuffer = await decodeAudioData(
-        base64ToUint8Array(base64Audio),
-        this.outputAudioContext
-      );
-      
-      // Schedule gapless playback
-      this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
-      const source = this.outputAudioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(this.outputAudioContext.destination);
-      source.start(this.nextStartTime);
-      this.nextStartTime += audioBuffer.duration;
-    }
-
-    // 2. Handle Interruption by model or VAD
-    if (message.serverContent?.interrupted) {
-      console.log("Interrupted!");
-      this.nextStartTime = 0;
-      // Note: Real implementation would stop active AudioBufferSourceNodes here
-    }
-
-    // 3. Handle Turn Complete
-    if (message.serverContent?.turnComplete) {
-       // Visual cues can be added here
-    }
-  }
-
   disconnect() {
-    if (this.session) {
-       try {
-         // Explicitly close the session to release backend resources
-         this.session.close && this.session.close();
-       } catch (e) { /* ignore */ }
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch (e) { /* ignore */ }
     }
-    
+
     if (this.inputSource) this.inputSource.disconnect();
     if (this.processor) this.processor.disconnect();
     if (this.inputAudioContext) this.inputAudioContext.close();
     if (this.outputAudioContext) this.outputAudioContext.close();
     if (this.stream) this.stream.getTracks().forEach(t => t.stop());
-    
+
     this.inputAudioContext = null;
     this.outputAudioContext = null;
-    this.session = null;
-    this.sessionPromise = null;
+    this.ws = null;
   }
 }

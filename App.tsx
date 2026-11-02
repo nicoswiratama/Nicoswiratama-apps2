@@ -1,6 +1,5 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { GoogleGenAI } from "@google/genai";
 import { 
   LayoutDashboard, 
   Building2, 
@@ -87,7 +86,9 @@ import { GmailAuthModal } from './components/GmailAuthModal';
 import { SuperAdminModal } from './components/SuperAdminModal';
 import { generateAndPrintPnLPdf } from './services/pnlPdfReport';
 import { generateAndPrintRevenuePdf } from './services/revenuePdfReport';
-import { UserAccount, PropertyData, CapexSetup, RevenueScenarios, RevenueScenarioTarget } from './types';
+import { generateAndPrintMarketIntelligencePdf } from './services/marketIntelligencePdfReport';
+import { MarketIntelligence } from './components/MarketIntelligence';
+import { UserAccount, PropertyData, CapexSetup, RevenueScenarios, RevenueScenarioTarget, CompetitorItem } from './types';
 import {
   getStoredUsers,
   getStoredCurrentUser,
@@ -634,7 +635,14 @@ export default function App() {
   const [isExportModalOpen, setExportModalOpen] = useState(false);
   const [exportModalDeptFilter, setExportModalDeptFilter] = useState<string[]>([]); 
 
-  const [competitors, setCompetitors] = useState<any[]>([]);
+  const [competitors, setCompetitors] = useState<CompetitorItem[]>(() => {
+    const p = properties.find(item => item.id === activePropertyId) || properties[0];
+    return p?.competitors || [];
+  });
+  const [competitorAiAnalysis, setCompetitorAiAnalysis] = useState<string>(() => {
+    const p = properties.find(item => item.id === activePropertyId) || properties[0];
+    return p?.competitorAiAnalysis || '';
+  });
   const [isScanning, setIsScanning] = useState(false);
   const [scanLog, setScanLog] = useState("");
   const [suggestedRate, setSuggestedRate] = useState({ low: 0, mid: 0, high: 0 });
@@ -656,7 +664,9 @@ export default function App() {
     updatedCapex?: CapexSetup,
     updatedDepts?: any,
     updatedManningKpi?: any,
-    updatedRevenueScenarios?: RevenueScenarios
+    updatedRevenueScenarios?: RevenueScenarios,
+    updatedCompetitors?: CompetitorItem[],
+    updatedCompetitorAiAnalysis?: string
   ) => {
     setProperties(prev => {
       const idx = prev.findIndex(p => p.id === activePropertyId);
@@ -667,6 +677,8 @@ export default function App() {
       const newDepts = updatedDepts !== undefined ? updatedDepts : (target.depts || projectedData?.depts);
       const newManningKpi = updatedManningKpi !== undefined ? updatedManningKpi : target.customManningKpi;
       const newScenarios = updatedRevenueScenarios !== undefined ? updatedRevenueScenarios : (target.revenueScenarios || revenueScenarios);
+      const newComps = updatedCompetitors !== undefined ? updatedCompetitors : (target.competitors || competitors);
+      const newAiAnalysis = updatedCompetitorAiAnalysis !== undefined ? updatedCompetitorAiAnalysis : (target.competitorAiAnalysis || competitorAiAnalysis);
       
       updatedList[idx] = {
         ...target,
@@ -678,6 +690,8 @@ export default function App() {
         depts: newDepts ? JSON.parse(JSON.stringify(newDepts)) : undefined,
         customManningKpi: newManningKpi ? JSON.parse(JSON.stringify(newManningKpi)) : undefined,
         revenueScenarios: newScenarios ? JSON.parse(JSON.stringify(newScenarios)) : undefined,
+        competitors: newComps ? JSON.parse(JSON.stringify(newComps)) : undefined,
+        competitorAiAnalysis: newAiAnalysis,
         updatedAt: new Date().toISOString()
       };
       saveStoredProperties(updatedList);
@@ -700,6 +714,8 @@ export default function App() {
       setActiveScenarioTab(sc.activeScenario || 'realistic');
       const gp = prop.growthParams || { revGrowth: 0.05, costInflation: 0.03 };
       setGrowthParams(gp);
+      setCompetitors(prop.competitors || []);
+      setCompetitorAiAnalysis(prop.competitorAiAnalysis || '');
       const rev = ThelokaBrain.calculateRevenue(inputVal.rooms, prop.monthlyTargets);
       let proj: any = ThelokaBrain.generateProjection(inputVal, rev);
       
@@ -1158,16 +1174,16 @@ export default function App() {
     }
     setSurveyLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const surveyText = JSON.stringify(surveys);
-      const response = await ai.models.generateContent({
-        model: "gemini-3-pro-preview",
-        contents: `Analyze these hotel property surveys and provide a strategic summary. Identify recurring problems, maintenance risks, and overall readiness for high-standard management. Surveys: ${surveyText}`,
+      const res = await fetch('/api/surveys/analyze-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ surveys })
       });
-      setAiAnalysis(response.text || "Gagal mendapatkan analisis.");
+      const data = await res.json();
+      setAiAnalysis(data.analysis || "Gagal mendapatkan analisis.");
     } catch (error) {
       console.error(error);
-      setAiAnalysis("Error saat menghubungi AI. Pastikan API Key valid.");
+      setAiAnalysis("Terjadi kendala saat menghubungi server AI.");
     } finally {
       setSurveyLoading(false);
     }
@@ -1176,61 +1192,58 @@ export default function App() {
   const analyzeSingleSurveyAI = async (survey: any) => {
     setSingleAiLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const surveyData = JSON.stringify(survey);
-      const response = await ai.models.generateContent({
-        model: "gemini-3-pro-preview",
-        contents: `Review this property survey: ${surveyData}. Give a summary insight and a "Manage Recommendation" (Recommended, Needs Audit, or High Risk). Why? Keep it concise.`,
+      const res = await fetch('/api/surveys/analyze-single', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ survey })
       });
-      setSingleAiAnalysis(response.text || "No insights found.");
+      const data = await res.json();
+      setSingleAiAnalysis(data.analysis || "No insights found.");
     } catch (error) {
       console.error(error);
-      setSingleAiAnalysis("AI Error. Check API Key.");
+      setSingleAiAnalysis("Terjadi kendala saat menghubungi server AI.");
     } finally {
       setSingleAiLoading(false);
     }
   };
 
-  // -- COMPETITOR HANDLERS --
-  const simulateScraping = () => {
-    setIsScanning(true);
-    setCompetitors([]);
-    setScanLog("Scanning area...");
-    let step = 0;
-    const interval = setInterval(() => {
-      step++;
-      if(step > 3) { clearInterval(interval); generateMockCompetitors(); }
-    }, 500);
-  };
-
-  const generateMockCompetitors = () => {
-    const results = [];
-    for (let i = 0; i < 5; i++) {
-      const price = basicInput.adr * (0.8 + Math.random() * 0.4);
-      results.push({
-        name: `${basicInput.location} ${HOTEL_NAMES_DB[i]}`,
-        rate: Math.round(price/10000)*10000,
-        dist: (Math.random()*5).toFixed(1)
-      });
+  // -- COMPETITOR & MARKET INTELLIGENCE HANDLERS --
+  const handleSaveCompetitors = (updatedComps: CompetitorItem[], aiSummary?: string) => {
+    setCompetitors(updatedComps);
+    if (aiSummary !== undefined) {
+      setCompetitorAiAnalysis(aiSummary);
     }
-    setCompetitors(results);
-    setIsScanning(false);
-    calculateRecommendations(results);
+    syncPropertyChanges(
+      basicInput,
+      monthlyTargets,
+      growthParams,
+      basicInput.capex,
+      projectedData?.depts,
+      undefined,
+      revenueScenarios,
+      updatedComps,
+      aiSummary
+    );
+    showToastNotification(`Data ${updatedComps.length} kompetitor untuk "${basicInput.name}" berhasil disimpan!`);
   };
 
-  const calculateRecommendations = (data: any[]) => {
-    if (data.length === 0) return;
-    const sorted = [...data].sort((a,b) => a.rate - b.rate);
-    const low = sorted[0].rate;
-    const high = sorted[sorted.length-1].rate;
-    const avg = data.reduce((a,b)=>a+b.rate,0)/data.length;
-    setSuggestedRate({ low: low * 0.95, mid: avg, high: high * 1.05 });
+  const handleApplyCompRateToSetup = (newAdr: number) => {
+    handleQuickSetupChange('adr', newAdr);
+    showToastNotification(`Target ADR Quick Setup diperbarui menjadi ${formatIDR(newAdr)} dan disinkronkan ke seluruh menu!`);
   };
 
-  const applySuggestedRate = (rate: number) => {
-    const roundedRate = Math.round(rate);
-    setBasicInput(prev => ({ ...prev, adr: roundedRate }));
-    updateMonthlyFromSetup('adr', roundedRate);
+  const handleDownloadMarketIntelligencePdf = () => {
+    try {
+      const fileName = generateAndPrintMarketIntelligencePdf({
+        basicInput,
+        competitors,
+        aiAnalysis: competitorAiAnalysis,
+      });
+      showToastNotification(`File PDF "${fileName}" berhasil di-generate dan otomatis ter-download ke komputer!`);
+    } catch (e: any) {
+      console.error("PDF Download error:", e);
+      showToastNotification(`Gagal mendownload PDF: ${e?.message || 'Terjadi kesalahan'}`);
+    }
   };
 
   const handlePrint = () => {
@@ -1906,74 +1919,15 @@ export default function App() {
   };
 
   const renderCompetitorAnalysis = () => (
-    <div className="max-w-5xl mx-auto pt-6 animate-fade-in">
-       <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-slate-800 flex items-center"><Globe className="w-6 h-6 mr-3 text-blue-600" /> Market Intelligence</h2>
-          <button onClick={simulateScraping} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold">Simulate Scan</button>
-       </div>
-       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="md:col-span-2 bg-slate-100 rounded-2xl h-80 relative flex items-center justify-center border border-slate-300 shadow-inner overflow-hidden">
-             {isScanning ? <div className="text-blue-900 font-bold animate-pulse text-center">
-               <CloudLightning className="w-12 h-12 mx-auto mb-2 text-blue-500 animate-bounce" />
-               {scanLog}
-             </div> : 
-              <div className="text-center w-full h-full relative">
-                {competitors.length > 0 ? 
-                  <div className="absolute inset-0 p-6 space-y-2 overflow-y-auto">
-                    {competitors.map((c,i)=><div key={i} className="bg-white p-3 rounded-xl shadow-sm text-xs flex justify-between items-center border border-slate-200 hover:border-blue-300 transition-colors">
-                        <div className="flex items-center">
-                          <MapPin className="w-3 h-3 mr-2 text-rose-500" />
-                          <span className="font-bold text-slate-700">{c.name} ({c.dist} km)</span>
-                        </div>
-                        <span className="font-bold text-blue-900">{formatIDR(c.rate)}</span>
-                    </div>)}
-                  </div> : 
-                  <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                      <Globe className="w-16 h-16 mb-4 opacity-10"/>
-                      <p className="font-medium">Data Market belum ditarik. Klik Simulate Scan.</p>
-                  </div>
-                }
-              </div>
-             }
-          </div>
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-             <h3 className="font-bold text-xs text-slate-400 uppercase tracking-widest mb-4">Competitors & AI Insights</h3>
-             
-             {competitors.length > 0 ? (
-                <div className="space-y-4">
-                   <div className="p-3 bg-blue-50 rounded-xl border border-blue-100">
-                      <h4 className="text-[10px] font-bold text-blue-700 uppercase mb-2">AI Price Recommendation</h4>
-                      <div className="space-y-2">
-                        <button onClick={() => applySuggestedRate(suggestedRate.low)} className="w-full flex justify-between bg-white hover:bg-emerald-50 p-2 rounded-lg border text-[11px] transition-all group">
-                          <span className="text-slate-500">Aggressive</span>
-                          <span className="font-bold text-emerald-600">{formatIDR(suggestedRate.low)}</span>
-                        </button>
-                        <button onClick={() => applySuggestedRate(suggestedRate.mid)} className="w-full flex justify-between bg-white hover:bg-blue-50 p-2 rounded-lg border text-[11px] transition-all group">
-                          <span className="text-slate-500">Competitive</span>
-                          <span className="font-bold text-blue-600">{formatIDR(suggestedRate.mid)}</span>
-                        </button>
-                        <button onClick={() => applySuggestedRate(suggestedRate.high)} className="w-full flex justify-between bg-white hover:bg-purple-50 p-2 rounded-lg border text-[11px] transition-all group">
-                          <span className="text-slate-500">Premium</span>
-                          <span className="font-bold text-purple-600">{formatIDR(suggestedRate.high)}</span>
-                        </button>
-                      </div>
-                   </div>
-                   <div className="pt-4 border-t">
-                      <h4 className="text-[10px] font-bold text-slate-400 uppercase mb-2">Add Competitor Manual</h4>
-                      <input placeholder="Hotel Name" value={newCompetitor.name} onChange={(e)=>setNewCompetitor({...newCompetitor, name: e.target.value})} className="w-full text-xs border rounded-lg p-2 mb-2" />
-                      <input type="number" placeholder="Price (IDR)" value={newCompetitor.rate || ''} onChange={(e)=>setNewCompetitor({...newCompetitor, rate: parseFloat(e.target.value)})} className="w-full text-xs border rounded-lg p-2 mb-2" />
-                      <button onClick={() => { if(newCompetitor.name && newCompetitor.rate) { setCompetitors([...competitors, {...newCompetitor, dist: '0.0'}]); calculateRecommendations([...competitors, {...newCompetitor, dist: '0.0'}]); setNewCompetitor({name:'', rate:0, dist:0}); } }} className="w-full bg-slate-900 text-white text-xs font-bold py-2 rounded-lg hover:bg-slate-800 transition-all">Add Manual</button>
-                   </div>
-                </div>
-             ) : (
-               <div className="text-center py-10 opacity-30">
-                  <Monitor className="w-8 h-8 mx-auto mb-2" />
-                  <p className="text-[10px]">Ready for Scan</p>
-               </div>
-             )}
-          </div>
-       </div>
-    </div>
+    <MarketIntelligence 
+      basicInput={basicInput}
+      competitors={competitors}
+      onUpdateCompetitors={(updated) => setCompetitors(updated)}
+      onApplyRateToSetup={handleApplyCompRateToSetup}
+      onSaveCompetitors={handleSaveCompetitors}
+      savedAiAnalysis={competitorAiAnalysis}
+      onDownloadPdf={handleDownloadMarketIntelligencePdf}
+    />
   );
 
   const renderDepartmentDetail = (type: string) => {
